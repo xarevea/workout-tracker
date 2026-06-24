@@ -17,7 +17,7 @@ class SettingsView(QWidget):
         title.setStyleSheet("font-size: 24px; font-weight: bold;")
         layout.addWidget(title)
 
-        # --- FITBIT API SETTINGS ---
+        # --- FITBIT API SETTINGS (RESTORED) ---
         api_group = QGroupBox("Fitbit Auto-Sync Credentials")
         api_layout = QVBoxLayout()
         
@@ -47,31 +47,33 @@ class SettingsView(QWidget):
         dict_group = QGroupBox("Exercise Dictionary Editor")
         dict_layout = QVBoxLayout()
         
-        # Add New Exercise Row
         add_layout = QHBoxLayout()
         self.new_ex_name = QLineEdit()
         self.new_ex_name.setPlaceholderText("Exercise Name (e.g., Nordic Curls)")
         
-        self.new_ex_primary = QComboBox()
-        self.new_ex_primary.addItems(["Chest", "Back", "Quads", "Hamstrings", "Calves", "Shoulders", "Biceps", "Triceps", "Core"])
+        muscle_groups = ["Chest", "Back", "Quads", "Hamstrings", "Calves", "Shoulders", "Biceps", "Triceps", "Core", "Glutes"]
         
+        self.new_ex_primary = QComboBox()
+        self.new_ex_primary.addItems(muscle_groups)
+        
+        # Validated Multi-select List for Secondary Muscles
         self.new_ex_secondary = QListWidget()
         self.new_ex_secondary.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.new_ex_secondary.addItems(["Chest", "Back", "Quads", "Hamstrings", "Calves", "Shoulders", "Biceps", "Triceps", "Core", "Glutes"])
-        self.new_ex_secondary.setFixedHeight(80) # Keep it small
+        self.new_ex_secondary.addItems(muscle_groups)
+        self.new_ex_secondary.setFixedHeight(80) 
         
         self.btn_add_ex = QPushButton("+ Add to Database")
-        self.btn_add_ex.setStyleSheet("background-color: #4CAF50; color: white;")
+        self.btn_add_ex.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px;")
         self.btn_add_ex.clicked.connect(self._add_exercise_to_db)
         
         add_layout.addWidget(self.new_ex_name)
         add_layout.addWidget(QLabel("Primary:"))
         add_layout.addWidget(self.new_ex_primary)
+        add_layout.addWidget(QLabel("Secondary:"))
         add_layout.addWidget(self.new_ex_secondary)
         add_layout.addWidget(self.btn_add_ex)
         dict_layout.addLayout(add_layout)
 
-        # Existing Exercises Table
         self.dict_table = QTableWidget(0, 3)
         self.dict_table.setHorizontalHeaderLabels(["Exercise Name", "Primary Muscle", "Secondary Muscles"])
         self.dict_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -85,9 +87,7 @@ class SettingsView(QWidget):
         dict_group.setLayout(dict_layout)
         layout.addWidget(dict_group, stretch=1)
 
-        self._load_data()
-
-    def _load_data(self):
+    def refresh_data(self):
         """Loads API keys and Exercise Dictionary from SQLite."""
         conn = get_connection()
         cursor = conn.cursor()
@@ -107,7 +107,6 @@ class SettingsView(QWidget):
             self.dict_table.setItem(row, 0, QTableWidgetItem(ex['name']))
             self.dict_table.setItem(row, 1, QTableWidgetItem(ex['primary_muscle'] or "N/A"))
             self.dict_table.setItem(row, 2, QTableWidgetItem(ex['secondary_muscles'] or "N/A"))
-            
         conn.close()
 
     def _save_api_keys(self):
@@ -126,20 +125,21 @@ class SettingsView(QWidget):
         name = self.new_ex_name.text().strip()
         if not name: return
         
+        # Extract selected secondaries into a comma-separated string
+        selected_secondaries = [item.text() for item in self.new_ex_secondary.selectedItems()]
+        secondary_str = ", ".join(selected_secondaries)
+        
         conn = get_connection()
         cursor = conn.cursor()
         try:
-            selected_secondaries = [item.text() for item in self.new_ex_secondary.selectedItems()]
-            secondary_str = ", ".join(selected_secondaries)
-
             cursor.execute('''
                 INSERT INTO exercises (name, category, primary_muscle, secondary_muscles)
                 VALUES (?, 'Hybrid', ?, ?)
             ''', (name, self.new_ex_primary.currentText(), secondary_str))
             conn.commit()
             self.new_ex_name.clear()
-            # self.new_ex_secondary.clear()
-            self._load_data()
+            self.new_ex_secondary.clearSelection()
+            self.refresh_data()
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not add exercise. It may already exist.\n{e}")
         finally:
@@ -155,4 +155,4 @@ class SettingsView(QWidget):
         cursor.execute("DELETE FROM exercises WHERE name=?", (ex_name,))
         conn.commit()
         conn.close()
-        self._load_data()
+        self.refresh_data()

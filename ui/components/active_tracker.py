@@ -1,15 +1,15 @@
 # ui/components/active_tracker.py
-import os
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-    QPushButton, QSpinBox, QDoubleSpinBox, QSlider, QGroupBox, QScrollArea
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+    QPushButton, QSpinBox, QDoubleSpinBox, QSlider, QGroupBox, QScrollArea, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QFont
 from PyQt6.QtMultimedia import QSoundEffect
+import os
 
 from ui.components.body_heatmap import AnatomicalHeatmap
-from core.db_operations import WorkoutDatabaseManager
+from core.database import get_connection
 
 class ActiveTrackerWidget(QWidget):
     def __init__(self, controller, minimap, parent=None):
@@ -19,18 +19,41 @@ class ActiveTrackerWidget(QWidget):
         
         self.workout_seconds = 0
         self.rest_seconds = 0
-        
         self.audio_enabled = True
-        self.warning_threshold_sec = 5
+        self.warning_threshold_sec = 5 
         
         self._setup_audio()
         self._setup_ui()
         self._setup_timers()
-        self._update_display()
+
+    def refresh_data(self):
+        """Loads available active templates to select from."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name FROM routine_templates WHERE is_active=1")
+        templates = cursor.fetchall()
+        conn.close()
+
+        self.combo_workout_selector.blockSignals(True)
+        self.combo_workout_selector.clear()
+        
+        for t in templates:
+            self.combo_workout_selector.addItem(t['name'], userData=t['id'])
+            
+        self.combo_workout_selector.blockSignals(False)
+        
+        if templates:
+            self._load_selected_workout()
+
+    def _load_selected_workout(self):
+        template_id = self.combo_workout_selector.currentData()
+        if template_id:
+            self.controller.load_template(template_id)
+            exercise_names = [ex['name'] for ex in self.controller.exercises]
+            self.minimap.load_workout(exercise_names)
+            self._update_display()
 
     def _setup_audio(self):
-        """Loads the sound files into memory."""
-        # Ensure paths match your project structure
         base_dir = os.path.dirname(os.path.abspath(__file__))
         tick_path = os.path.join(base_dir, '..', '..', 'assets', 'tick.wav')
         bell_path = os.path.join(base_dir, '..', '..', 'assets', 'bell.wav')
@@ -43,29 +66,27 @@ class ActiveTrackerWidget(QWidget):
         if os.path.exists(bell_path):
             self.snd_bell.setSource(QUrl.fromLocalFile(bell_path))
 
+    def _play_sound(self, sound_type: str):
+        if not self.audio_enabled: return
+        if sound_type == "tick" and self.snd_tick.source().isValid(): self.snd_tick.play()
+        elif sound_type == "bell" and self.snd_bell.source().isValid(): self.snd_bell.play()
+
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
 
+        # --- WORKOUT SELECTOR ---
         workout_select_layout = QHBoxLayout()
         self.combo_workout_selector = QComboBox()
-        self.combo_workout_selector.currentTextChanged.connect(self._load_selected_workout)
-        
-        workout_select_layout.addWidget(QLabel("Select Today's Workout:"))
-        workout_select_layout.addWidget(self.combo_workout_selector)
-        layout.insertLayout(0, workout_select_layout)
-        
-        # Inside _setup_ui(), add the Heatmap next to the current exercise info:
-        self.exercise_heatmap = AnatomicalHeatmap()
-        self.exercise_heatmap.setFixedHeight(250)
-        layout.insertWidget(4, self.exercise_heatmap)
+        self.combo_workout_selector.currentIndexChanged.connect(self._load_selected_workout)
+        workout_select_layout.addWidget(QLabel("Today's Workout:"))
+        workout_select_layout.addWidget(self.combo_workout_selector, stretch=1)
+        layout.addLayout(workout_select_layout)
 
-        # --- TOP BAR: Timers & Controls ---
+        # --- TIMERS & CONTROLS ---
         timer_layout = QHBoxLayout()
         self.lbl_timer = QLabel("00:00")
         self.lbl_timer.setFont(QFont("Arial", 36, QFont.Weight.Bold))
-        self.lbl_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
         self.btn_play_pause = QPushButton("Start Workout")
         self.btn_play_pause.setFixedSize(120, 40)
         self.btn_play_pause.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
@@ -82,46 +103,44 @@ class ActiveTrackerWidget(QWidget):
         self.lbl_rest = QLabel("Resting...")
         self.lbl_rest.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         self.lbl_rest.setStyleSheet("color: #FF9800;")
-        
         self.btn_add_time = QPushButton("+ 30s")
-        self.btn_add_time.setFixedSize(80, 30)
-        self.btn_add_time.clicked.connect(lambda: self._add_rest_time(30))
-        
         self.btn_skip_rest = QPushButton("Skip Rest")
-        self.btn_skip_rest.setFixedSize(80, 30)
+        self.btn_add_time.clicked.connect(lambda: self._add_rest_time(30))
         self.btn_skip_rest.clicked.connect(self._skip_rest)
-
         self.rest_layout.addStretch()
         self.rest_layout.addWidget(self.lbl_rest)
         self.rest_layout.addWidget(self.btn_add_time)
         self.rest_layout.addWidget(self.btn_skip_rest)
         self.rest_layout.addStretch()
-        
         self.rest_container = QWidget()
         self.rest_container.setLayout(self.rest_layout)
         self.rest_container.hide()
         layout.addWidget(self.rest_container)
 
-        # --- CURRENT EXERCISE INFO ---
-        self.lbl_exercise_name = QLabel("Ready to Start")
+        # --- EXERCISE INFO & HEATMAP ---
+        info_layout = QHBoxLayout()
+        text_layout = QVBoxLayout()
+        self.lbl_exercise_name = QLabel("Select a template...")
         self.lbl_exercise_name.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        self.lbl_exercise_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.lbl_exercise_name)
-
         self.lbl_set_tracker = QLabel("-")
-        self.lbl_set_tracker.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.lbl_set_tracker)
+        text_layout.addWidget(self.lbl_exercise_name)
+        text_layout.addWidget(self.lbl_set_tracker)
+        
+        self.exercise_heatmap = AnatomicalHeatmap()
+        self.exercise_heatmap.setFixedSize(300, 200) # Compact heatmap
+        
+        info_layout.addLayout(text_layout)
+        info_layout.addWidget(self.exercise_heatmap)
+        layout.addLayout(info_layout)
 
         # --- LOGGING AREA ---
         self.log_group = QGroupBox("Log Current Set")
         log_layout = QVBoxLayout()
-        
         input_layout = QHBoxLayout()
         self.spin_weight = QDoubleSpinBox()
         self.spin_weight.setRange(0, 1000)
         self.spin_weight.setSuffix(" lbs")
         self.spin_weight.setSingleStep(2.5)
-        
         self.spin_reps = QSpinBox()
         self.spin_reps.setRange(0, 100)
         self.spin_reps.setSuffix(" reps")
@@ -137,7 +156,6 @@ class ActiveTrackerWidget(QWidget):
         self.slider_rpe.setRange(1, 10)
         self.slider_rpe.setValue(7)
         self.slider_rpe.setTickPosition(QSlider.TickPosition.TicksBelow)
-        
         self.lbl_rpe_val = QLabel("RPE: 7")
         self.slider_rpe.valueChanged.connect(lambda v: self.lbl_rpe_val.setText(f"RPE: {v}"))
         
@@ -157,36 +175,24 @@ class ActiveTrackerWidget(QWidget):
         btn_layout.addWidget(self.btn_log)
         btn_layout.addStretch()
         log_layout.addLayout(btn_layout)
-
         self.log_group.setLayout(log_layout)
         layout.addWidget(self.log_group)
 
-        # --- NEW: COMPLETED SETS HISTORY ---
+        # History
         history_box = QGroupBox("Completed Sets History")
         self.history_layout = QVBoxLayout()
         self.history_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         history_box.setLayout(self.history_layout)
-        
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(history_box)
         scroll.setMaximumHeight(150)
-        
         layout.addWidget(scroll)
-        layout.addStretch()
 
     def _setup_timers(self):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_clock)
         self.timer.start(1000)
-
-    def _play_sound(self, sound_type: str):
-        if not self.audio_enabled: return
-        
-        if sound_type == "tick" and self.snd_tick.source().isValid():
-            self.snd_tick.play()
-        elif sound_type == "bell" and self.snd_bell.source().isValid():
-            self.snd_bell.play()
 
     def _toggle_timer(self):
         self.controller.toggle_workout_state()
@@ -201,9 +207,7 @@ class ActiveTrackerWidget(QWidget):
             self.btn_log.setEnabled(False)
 
     def _update_clock(self):
-        """Modified clock method with audio hooks."""
         if not self.controller.is_active: return
-        
         self.workout_seconds += 1
         
         if self.rest_seconds > 0:
@@ -212,21 +216,17 @@ class ActiveTrackerWidget(QWidget):
             self.lbl_timer.setText(f"{mins:02d}:{secs:02d}")
             self.lbl_timer.setStyleSheet("color: #FF9800;")
             
-            # --- AUDIO HOOKS ---
-            if self.rest_seconds == self.warning_threshold_sec:
-                self._play_sound("tick")
-            elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0:
-                self._play_sound("tick") # Continues ticking down
+            if self.rest_seconds == self.warning_threshold_sec: self._play_sound("tick")
+            elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0: self._play_sound("tick")
             elif self.rest_seconds == 0:
                 self._play_sound("bell")
                 self._skip_rest() 
         else:
             mins, secs = divmod(self.workout_seconds, 60)
             self.lbl_timer.setText(f"{mins:02d}:{secs:02d}")
-            self.lbl_timer.setStyleSheet("color: #4CAF50;")
+            self.lbl_timer.setStyleSheet("color: #4CAF50;") 
 
-    def _add_rest_time(self, seconds: int):
-        self.rest_seconds += seconds
+    def _add_rest_time(self, seconds: int): self.rest_seconds += seconds
 
     def _skip_rest(self):
         self.rest_seconds = 0
@@ -239,17 +239,16 @@ class ActiveTrackerWidget(QWidget):
     def _update_display(self):
         current_ex = self.controller.get_current_exercise()
         
-        # Clear history layout
         for i in reversed(range(self.history_layout.count())): 
             widget = self.history_layout.itemAt(i).widget()
-            if widget:
-                widget.setParent(None)
+            if widget: widget.setParent(None)
 
         if not current_ex:
             self.lbl_exercise_name.setText("Workout Complete!")
             self.lbl_set_tracker.setText("-")
             self.btn_log.setEnabled(False)
             self.btn_play_pause.setEnabled(False)
+            self.exercise_heatmap.update_heatmap({}) # Clear heatmap
             return
 
         self.lbl_exercise_name.setText(current_ex['name'])
@@ -260,16 +259,22 @@ class ActiveTrackerWidget(QWidget):
         self.spin_reps.setValue(target_rep_val)
         self.minimap.set_active_node(self.controller.current_exercise_index)
 
-        # Populate History Logic
+        # UPDATE EXERCISE HEATMAP
+        volume_map = {}
+        if current_ex.get('primary_muscle'):
+            volume_map[current_ex['primary_muscle']] = 15 # Red/Green intensity
+        if current_ex.get('secondary_muscles'):
+            for sec in [s.strip() for s in current_ex['secondary_muscles'].split(',')]:
+                volume_map[sec] = 5 # Blue intensity
+        self.exercise_heatmap.update_heatmap(volume_map)
+
+        # Update History
         target_str = str(current_ex['target_reps'])
         min_target_reps = int(target_str.split('-')[0]) if '-' in target_str else int(target_str)
-
         for log in self.controller.session_logs:
             if log['exercise'] == current_ex['name']:
                 color = "#4CAF50" if log['reps'] >= min_target_reps else "#F44336"
-                status = "Hit" if log['reps'] >= min_target_reps else "Missed"
-                
-                history_lbl = QLabel(f"Set {log['set']}: {log['reps']} reps @ {log['weight']} lbs | RPE: {log['rpe']} [{status}]")
+                history_lbl = QLabel(f"Set {log['set']}: {log['reps']} reps @ {log['weight']} lbs | RPE: {log['rpe']}")
                 history_lbl.setStyleSheet(f"color: {color}; font-weight: bold; padding: 2px;")
                 self.history_layout.addWidget(history_lbl)
 
@@ -280,8 +285,73 @@ class ActiveTrackerWidget(QWidget):
             rpe=self.slider_rpe.value()
         )
         self.slider_rpe.setValue(7)
-        self._update_display()
         
-        self.rest_seconds = 90
-        self.rest_container.show()
-        self.log_group.setEnabled(False)
+        # --- CHECK FOR WORKOUT COMPLETION ---
+        if self.controller.current_exercise_index >= len(self.controller.exercises):
+            self._trigger_workout_review()
+        else:
+            self._update_display()
+            self.rest_seconds = 90
+            self.rest_container.show()
+            self.log_group.setEnabled(False)
+
+    def _trigger_workout_review(self):
+        self.timer.stop() # Freeze the UI clock
+        workout_data = self.controller.finish_workout()
+        
+        # 1. Group logs by exercise for the Progression Engine
+        from collections import defaultdict
+        logs_by_ex = defaultdict(list)
+        for log in workout_data['logs']:
+            logs_by_ex[log['exercise']].append(log)
+            
+        # 2. Generate Progression Suggestions
+        from modules.progression.engine import ProgressionEngine
+        engine = ProgressionEngine()
+        suggestions = {}
+        
+        for ex_dict in self.controller.exercises:
+            ex_name = ex_dict['name']
+            if ex_name in logs_by_ex:
+                # Parse "8-10" string into a tuple (8, 10) for the math engine
+                rep_str = str(ex_dict['target_reps'])
+                if '-' in rep_str:
+                    min_r, max_r = map(int, rep_str.split('-'))
+                else:
+                    min_r, max_r = int(rep_str), int(rep_str)
+                    
+                eval_result = engine.evaluate_exercise_progression(
+                    target_sets=ex_dict['target_sets'],
+                    target_rep_range=(min_r, max_r),
+                    current_weight=ex_dict['target_weight'],
+                    completed_logs=logs_by_ex[ex_name]
+                )
+                
+                target_met = eval_result['action'] == 'INCREASE_WEIGHT'
+                suggestions[ex_name] = {
+                    "target_met": target_met,
+                    "action": eval_result['action'],
+                    "new_weight": eval_result['new_weight']
+                }
+
+        # 3. Pop up the Review Dialog
+        from ui.components.review_dialog import WorkoutReviewDialog
+        dialog = WorkoutReviewDialog(workout_data['logs'], suggestions, self)
+        dialog.exec() 
+        
+        # 4. Save to Database
+        from core.db_operations import WorkoutDatabaseManager
+        template_name = self.combo_workout_selector.currentText()
+        WorkoutDatabaseManager.save_completed_workout(
+            workout_name=template_name,
+            duration_minutes=workout_data['duration_minutes'],
+            bodyweight=185.0, # You can tie this to a bodyweight tracker later
+            logs=workout_data['logs']
+        )
+        
+        # 5. Lock UI
+        self.lbl_exercise_name.setText("Workout Complete & Saved!")
+        self.lbl_set_tracker.setText("-")
+        self.btn_log.setEnabled(False)
+        self.btn_play_pause.setEnabled(False)
+        self.exercise_heatmap.update_heatmap({}) # Clear heatmap
