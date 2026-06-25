@@ -48,8 +48,24 @@ class ActiveTrackerWidget(QWidget):
     def _load_selected_workout(self):
         template_id = self.combo_workout_selector.currentData()
         if template_id:
+            # 1. Safety Reset: Pause and zero-out timers if switching templates
+            if self.controller.is_active:
+                self._toggle_timer() # Pauses the active workout
+                
+            self.workout_seconds = 0
+            self.rest_seconds = 0
+            self.lbl_timer.setText("00:00")
+            self.lbl_timer.setStyleSheet("color: white;")
+            
+            # Hide rest UI and re-enable logging
+            self.rest_container.hide()
+            self.log_group.setEnabled(True)
+            
+            # 2. Load the new data
             self.controller.load_template(template_id)
             exercise_names = [ex['name'] for ex in self.controller.exercises]
+            
+            # 3. Update the UI
             self.minimap.load_workout(exercise_names)
             self._update_display()
 
