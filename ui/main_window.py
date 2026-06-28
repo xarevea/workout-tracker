@@ -29,8 +29,46 @@ class MainWindow(QMainWindow):
         self.main_layout.setSpacing(0)
 
         self.nav_buttons = []
+        self._setup_global_header()
+        self._setup_ui()
+
+    def _setup_global_header(self):
+        self.header_widget = QWidget()
+        self.header_widget.setStyleSheet("background-color: #1e1e1e; border-bottom: 2px solid #333;")
+        header_layout = QHBoxLayout(self.header_widget)
+        header_layout.setContentsMargins(20, 10, 20, 10)
+        
+        title = QLabel("🦾 Terminal Calisthenics & Strength")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #E0E0E0;")
+        
+        # This is the global timer!
+        self.lbl_global_timer = QLabel("No Active Session")
+        self.lbl_global_timer.setStyleSheet("font-size: 18px; font-weight: bold; color: #888;")
+        
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        header_layout.addWidget(self.lbl_global_timer)
+
+    def _setup_ui(self):
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+
+        master_layout = QVBoxLayout(main_widget)
+        master_layout.setContentsMargins(0, 0, 0, 0)
+        master_layout.setSpacing(0)
+
+        master_layout.addWidget(self.header_widget)
+
+        body_widget = QWidget()
+        body_layout = QHBoxLayout(body_widget)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        master_layout.addWidget(body_widget)
+
         self._setup_sidebar()
+        body_layout.addWidget(self.sidebar)
+
         self._setup_stacked_views()
+        body_layout.addWidget(self.stacked_widget)
 
     def _setup_sidebar(self):
         self.sidebar = QWidget()
@@ -47,7 +85,6 @@ class MainWindow(QMainWindow):
         self.sidebar_layout.addWidget(logo)
             
         self.sidebar_layout.addStretch()
-        self.main_layout.addWidget(self.sidebar)
 
     def _setup_stacked_views(self):
         self._next_idx = 0
@@ -67,7 +104,8 @@ class MainWindow(QMainWindow):
         
         self.active_tracker = ActiveTrackerWidget(
             controller=self.session_controller, 
-            minimap=self.minimap
+            minimap=self.minimap,
+            global_timer_lbl=self.lbl_global_timer,
         )
         
         workout_layout.addWidget(self.minimap, stretch=1)
@@ -87,8 +125,6 @@ class MainWindow(QMainWindow):
         # 4. Settings
         self.settings_view = SettingsView()
         self._add_stacked_widget(self.settings_view, "Settings")
-        
-        self.main_layout.addWidget(self.stacked_widget)
         
         self._switch_view(0) # Initialize default view
 

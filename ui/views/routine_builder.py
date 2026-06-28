@@ -3,7 +3,8 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QListWidget, 
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, 
     QHeaderView, QInputDialog, QMessageBox, QComboBox,
-    QCheckBox, QLineEdit, QSpinBox, QDoubleSpinBox, QCompleter
+    QCheckBox, QLineEdit, QSpinBox, QDoubleSpinBox, QCompleter,
+    QSizePolicy
 )
 from PyQt6.QtCore import Qt
 
@@ -135,6 +136,8 @@ class RoutineBuilderView(QWidget):
 
         # 1. EXERCISE COMBO
         combo = QComboBox()
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.setMinimumWidth(150) # Prevent it from collapsing completely
         combo.setEditable(True)
         combo.addItems(self.exercise_bank)
         completer = QCompleter(self.exercise_bank)

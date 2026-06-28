@@ -16,10 +16,11 @@ from core.db_operations import WorkoutDatabaseManager
 from core.events import event_bus
 
 class ActiveTrackerWidget(QWidget):
-    def __init__(self, controller, minimap, parent=None):
+    def __init__(self, controller, minimap, global_timer_lbl=None, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.minimap = minimap
+        self.global_timer_lbl = global_timer_lbl
         
         self.workout_seconds = 0
         self.rest_seconds = 0
@@ -196,7 +197,7 @@ class ActiveTrackerWidget(QWidget):
         log_layout.addLayout(rpe_layout)
 
         btn_layout = QHBoxLayout()
-        self.btn_log = QPushButton("Log Set & Start Rest")
+        self.btn_log = QPushButton("Complete Set")
         self.btn_log.setFixedSize(200, 40)
         self.btn_log.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
         self.btn_log.clicked.connect(self._on_log_set_clicked)
@@ -242,8 +243,12 @@ class ActiveTrackerWidget(QWidget):
         if self.rest_seconds > 0:
             self.rest_seconds -= 1
             mins, secs = divmod(self.rest_seconds, 60)
-            self.lbl_timer.setText(f"{mins:02d}:{secs:02d}")
+            time_str = f"Resting: {mins:02d}:{secs:02d}"
+            self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #FF9800;")
+
+            self.global_timer_lbl.setText(time_str)
+            self.global_timer_lbl.setStyleSheet("color: #FF9800; font-weight: bold; font-size: 18px;")
             
             if self.rest_seconds == self.warning_threshold_sec: self._play_sound("tick")
             elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0: self._play_sound("tick")
@@ -254,8 +259,13 @@ class ActiveTrackerWidget(QWidget):
         else:
             self.workout_seconds += 1
             mins, secs = divmod(self.workout_seconds, 60)
-            self.lbl_timer.setText(f"{mins:02d}:{secs:02d}")
+            time_str = f"Active: {mins:02d}:{secs:02d}"
+
+            self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #4CAF50;")
+            
+            self.global_timer_lbl.setText(time_str)
+            self.global_timer_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 18px;")
 
     def _add_rest_time(self, seconds: int): self.rest_seconds += seconds
 
@@ -312,6 +322,7 @@ class ActiveTrackerWidget(QWidget):
                 self.history_layout.addWidget(lbl)
     
     def _on_log_set_clicked(self):
+        print("finished set!")
         self.controller.log_set(
             reps=self.spin_reps.value(),
             weight=self.spin_weight.value(),
@@ -331,6 +342,9 @@ class ActiveTrackerWidget(QWidget):
     def _trigger_workout_review(self):
         self.timer.stop()
         workout_data = self.controller.finish_workout()
+
+        self.global_timer_lbl.setText("Workout Complete")
+        self.global_timer_lbl.setStyleSheet("color: #888;")
         
         from collections import defaultdict
         logs_by_ex = defaultdict(list)
