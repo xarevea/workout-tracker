@@ -187,3 +187,19 @@ class WorkoutDatabaseManager:
                 for sec in [s.strip() for s in ex['secondary_muscles'].split(',')]:
                     volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
         return volume_map
+
+    @staticmethod
+    def get_routine_exercises(template_id: int) -> list:
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT r.exercise_name as name, r.target_sets, r.target_reps_min, r.target_reps_max, 
+                   r.target_weight, r.rest_seconds, e.primary_muscle, e.secondary_muscles
+            FROM routine_exercises r
+            JOIN exercises e ON r.exercise_name = e.name
+            WHERE r.template_id = ?
+        ''', (template_id,))
+        exercises = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return exercises

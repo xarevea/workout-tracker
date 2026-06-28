@@ -270,54 +270,47 @@ class ActiveTrackerWidget(QWidget):
 
     def _update_display(self):
         current_ex = self.controller.get_current_exercise()
-        
         for i in reversed(range(self.history_layout.count())): 
             widget = self.history_layout.itemAt(i).widget()
             if widget: widget.setParent(None)
 
         if not current_ex:
             self.lbl_exercise_name.setText("Workout Complete!")
+            self.lbl_loadout.setText("")
             self.lbl_set_tracker.setText("-")
             self.btn_log.setEnabled(False)
             self.btn_play_pause.setEnabled(False)
-            self.exercise_heatmap.update_heatmap({}) # Clear heatmap
+            self.exercise_heatmap.update_heatmap({}) 
             return
 
         self.lbl_exercise_name.setText(current_ex['name'])
         self.lbl_set_tracker.setText(f"Set {self.controller.current_set} of {current_ex['target_sets']}")
-
-        self.chk_warmup.setChecked(False) # Reset warmup toggle per set
         
+        self.spin_weight.setValue(current_ex['target_weight'])
+        self.spin_reps.setValue(current_ex['target_reps_max']) # FIXED
+        self.minimap.set_active_node(self.controller.current_exercise_index)
+        self.chk_warmup.setChecked(False) 
+
         loadout = PlateCalculator.calculate_loadout(current_ex['target_weight'])
         if loadout is not None and len(loadout) > 0:
             self.lbl_loadout.setText(f"Loadout per side: [ {' | '.join([f'{p}lb' for p in loadout])} ]")
         else:
             self.lbl_loadout.setText("")
 
-        self.spin_weight.setValue(current_ex['target_weight'])
-        target_rep_val = int(str(current_ex['target_reps']).split('-')[-1]) if '-' in str(current_ex['target_reps']) else int(current_ex['target_reps'])
-        self.spin_reps.setValue(target_rep_val)
-        self.minimap.set_active_node(self.controller.current_exercise_index)
-
-        # UPDATE EXERCISE HEATMAP
         volume_map = {}
-        if current_ex.get('primary_muscle'):
-            volume_map[current_ex['primary_muscle']] = 15 # Red/Green intensity
+        if current_ex.get('primary_muscle'): volume_map[current_ex['primary_muscle']] = 15 
         if current_ex.get('secondary_muscles'):
-            for sec in [s.strip() for s in current_ex['secondary_muscles'].split(',')]:
-                volume_map[sec] = 5 # Blue intensity
+            for sec in [s.strip() for s in current_ex['secondary_muscles'].split(',')]: volume_map[sec] = 5 
         self.exercise_heatmap.update_heatmap(volume_map)
 
-        # Update History
-        target_str = str(current_ex['target_reps'])
-        min_target_reps = int(target_str.split('-')[0]) if '-' in target_str else int(target_str)
         for log in self.controller.session_logs:
             if log['exercise'] == current_ex['name']:
-                color = "#4CAF50" if log['reps'] >= min_target_reps else "#F44336"
-                history_lbl = QLabel(f"Set {log['set']}: {log['reps']} reps @ {log['weight']} lbs | RPE: {log['rpe']}")
-                history_lbl.setStyleSheet(f"color: {color}; font-weight: bold; padding: 2px;")
-                self.history_layout.addWidget(history_lbl)
-
+                color = "#888888" if log.get('is_warmup') else ("#4CAF50" if log['reps'] >= current_ex['target_reps_min'] else "#F44336")
+                prefix = "Warmup" if log.get('is_warmup') else f"Set {log['set']}"
+                lbl = QLabel(f"{prefix}: {log['reps']} reps @ {log['weight']} lbs | RPE: {log['rpe']}")
+                lbl.setStyleSheet(f"color: {color}; font-weight: bold; padding: 2px;")
+                self.history_layout.addWidget(lbl)
+    
     def _on_log_set_clicked(self):
         self.controller.log_set(
             reps=self.spin_reps.value(),
