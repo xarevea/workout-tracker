@@ -1,15 +1,19 @@
-# ui/components/active_tracker.py
+import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QSpinBox, QDoubleSpinBox, QSlider, QGroupBox, QScrollArea, QComboBox
+    QPushButton, QSpinBox, QDoubleSpinBox, QSlider, QGroupBox, QScrollArea, QComboBox, QCheckBox
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtMultimedia import QSoundEffect
-import os
+from PyQt6.QtWidgets import QSystemTrayIcon, QStyle
 
 from ui.components.body_heatmap import AnatomicalHeatmap
 from core.database import get_connection
+from modules.equipment.plate_calculator import PlateCalculator
+from ui.components.review_dialog import WorkoutReviewDialog
+from core.db_operations import WorkoutDatabaseManager
+from core.events import event_bus
 
 class ActiveTrackerWidget(QWidget):
     def __init__(self, controller, minimap, parent=None):
@@ -21,6 +25,10 @@ class ActiveTrackerWidget(QWidget):
         self.rest_seconds = 0
         self.audio_enabled = True
         self.warning_threshold_sec = 5 
+        
+        self.tray = QSystemTrayIcon(self)
+        self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        self.tray.show()
         
         self._setup_audio()
         self._setup_ui()
@@ -168,6 +176,11 @@ class ActiveTrackerWidget(QWidget):
         input_layout.addWidget(self.spin_weight)
         input_layout.addWidget(QLabel("Reps:"))
         input_layout.addWidget(self.spin_reps)
+
+        self.chk_warmup = QCheckBox("Warm-Up Set")
+        self.chk_warmup.setStyleSheet("color: #FF9800; font-weight: bold;")
+        input_layout.addWidget(self.chk_warmup)
+
         log_layout.addLayout(input_layout)
 
         rpe_layout = QHBoxLayout()
@@ -227,7 +240,6 @@ class ActiveTrackerWidget(QWidget):
 
     def _update_clock(self):
         if not self.controller.is_active: return
-        
         if self.rest_seconds > 0:
             self.rest_seconds -= 1
             mins, secs = divmod(self.rest_seconds, 60)
@@ -238,9 +250,10 @@ class ActiveTrackerWidget(QWidget):
             elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0: self._play_sound("tick")
             elif self.rest_seconds == 0:
                 self._play_sound("bell")
+                self.tray.showMessage("Rest Complete!", "Time for your next set.", QSystemTrayIcon.MessageIcon.Information, 3000)
                 self._skip_rest() 
         else:
-            self.workout_seconds += 1 # ONLY runs during active sets
+            self.workout_seconds += 1
             mins, secs = divmod(self.workout_seconds, 60)
             self.lbl_timer.setText(f"{mins:02d}:{secs:02d}")
             self.lbl_timer.setStyleSheet("color: #4CAF50;")
@@ -273,11 +286,11 @@ class ActiveTrackerWidget(QWidget):
         self.lbl_exercise_name.setText(current_ex['name'])
         self.lbl_set_tracker.setText(f"Set {self.controller.current_set} of {current_ex['target_sets']}")
 
-        from modules.equipment.plate_calculator import PlateCalculator
+        self.chk_warmup.setChecked(False) # Reset warmup toggle per set
+        
         loadout = PlateCalculator.calculate_loadout(current_ex['target_weight'])
         if loadout is not None and len(loadout) > 0:
-            formatted_plates = " | ".join([f"{p}lb" for p in loadout])
-            self.lbl_loadout.setText(f"Loadout per side: [ {formatted_plates} ]")
+            self.lbl_loadout.setText(f"Loadout per side: [ {' | '.join([f'{p}lb' for p in loadout])} ]")
         else:
             self.lbl_loadout.setText("")
 
@@ -309,31 +322,27 @@ class ActiveTrackerWidget(QWidget):
         self.controller.log_set(
             reps=self.spin_reps.value(),
             weight=self.spin_weight.value(),
-            rpe=self.slider_rpe.value()
+            rpe=self.slider_rpe.value(),
+            is_warmup=self.chk_warmup.isChecked()
         )
         self.slider_rpe.setValue(7)
         
-        # --- CHECK FOR WORKOUT COMPLETION ---
         if self.controller.current_exercise_index >= len(self.controller.exercises):
             self._trigger_workout_review()
         else:
             self._update_display()
-            self.rest_seconds = 90
+            self.rest_seconds = self.controller.get_current_exercise().get('rest_seconds', 90)
             self.rest_container.show()
             self.log_group.setEnabled(False)
 
     def _trigger_workout_review(self):
-        from ui.components.review_dialog import WorkoutReviewDialog
-        self.timer.stop() # Freeze the UI clock
+        self.timer.stop()
         workout_data = self.controller.finish_workout()
         
-        # 1. Group logs by exercise for the Progression Engine
         from collections import defaultdict
         logs_by_ex = defaultdict(list)
-        for log in workout_data['logs']:
-            logs_by_ex[log['exercise']].append(log)
+        for log in workout_data['logs']: logs_by_ex[log['exercise']].append(log)
             
-        # 2. Generate Progression Suggestions
         from modules.progression.engine import ProgressionEngine
         engine = ProgressionEngine()
         suggestions = {}
@@ -341,52 +350,27 @@ class ActiveTrackerWidget(QWidget):
         for ex_dict in self.controller.exercises:
             ex_name = ex_dict['name']
             if ex_name in logs_by_ex:
-                # Parse "8-10" string into a tuple (8, 10) for the math engine
-                rep_str = str(ex_dict['target_reps'])
-                if '-' in rep_str:
-                    min_r, max_r = map(int, rep_str.split('-'))
-                else:
-                    min_r, max_r = int(rep_str), int(rep_str)
-                    
                 eval_result = engine.evaluate_exercise_progression(
                     target_sets=ex_dict['target_sets'],
-                    target_rep_range=(min_r, max_r),
+                    min_reps=ex_dict['target_reps_min'],
+                    max_reps=ex_dict['target_reps_max'],
                     current_weight=ex_dict['target_weight'],
                     completed_logs=logs_by_ex[ex_name]
                 )
-                
-                target_met = eval_result['action'] == 'INCREASE_WEIGHT'
-                suggestions[ex_name] = {
-                    "target_met": target_met,
-                    "action": eval_result['action'],
-                    "new_weight": eval_result['new_weight']
-                }
+                suggestions[ex_name] = eval_result
 
-        # 3. Pop up the Review Dialog
-        from ui.components.review_dialog import WorkoutReviewDialog
-        current_settings = {ex['name']: {'weight': ex['target_weight'], 'reps': ex['target_reps']} for ex in self.controller.exercises}
-        
+        current_settings = {ex['name']: {'weight': ex['target_weight'], 'min_reps': ex['target_reps_min'], 'max_reps': ex['target_reps_max']} for ex in self.controller.exercises}
         dialog = WorkoutReviewDialog(workout_data['logs'], suggestions, current_settings, self)
         
         if dialog.exec():
-            final_targets = dialog.get_final_targets()
-            template_id = self.combo_workout_selector.currentData()
-            from core.db_operations import WorkoutDatabaseManager
-            WorkoutDatabaseManager.update_routine_targets(template_id, final_targets) 
-        
-        # 4. Save to Database
-        from core.db_operations import WorkoutDatabaseManager
-        template_name = self.combo_workout_selector.currentText()
+            WorkoutDatabaseManager.update_routine_targets(self.combo_workout_selector.currentData(), dialog.get_final_targets())
+            
         WorkoutDatabaseManager.save_completed_workout(
-            workout_name=template_name,
+            workout_name=self.combo_workout_selector.currentText(),
             duration_minutes=workout_data['duration_minutes'],
-            bodyweight=185.0, # You can tie this to a bodyweight tracker later
+            bodyweight=185.0,
             logs=workout_data['logs']
         )
         
-        # 5. Lock UI
-        self.lbl_exercise_name.setText("Workout Complete & Saved!")
-        self.lbl_set_tracker.setText("-")
-        self.btn_log.setEnabled(False)
-        self.btn_play_pause.setEnabled(False)
-        self.exercise_heatmap.update_heatmap({}) # Clear heatmap
+        event_bus.workout_completed.emit() # Triggers dashboard update
+        self.lbl_exercise_name.setText("Workout Complete!")

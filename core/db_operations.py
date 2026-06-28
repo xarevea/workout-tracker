@@ -1,59 +1,79 @@
-# core/db_operations.py
 from core.database import get_connection
-from typing import List, Dict
 
 class WorkoutDatabaseManager:
+    # --- UI DECOUPLED METHODS ---
     @staticmethod
-    def save_completed_workout(workout_name: str, duration_minutes: int, bodyweight: float, logs: List[Dict]) -> int:
-        """
-        Saves a full workout session and its corresponding sets into the database.
-        Uses a transaction so if one set fails to save, the whole operation rolls back safely.
-        """
+    def get_all_exercises() -> list:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        try:
-            # 1. Create the main workout entry
-            cursor.execute('''
-                INSERT INTO workouts (name, duration_minutes, bodyweight_at_time)
-                VALUES (?, ?, ?)
-            ''', (workout_name, duration_minutes, bodyweight))
-            
-            workout_id = cursor.lastrowid
-            
-            # 2. Insert all the individual sets (logs)
-            for log in logs:
-                # First, ensure the exercise exists in the DB to get its ID
-                cursor.execute('SELECT id FROM exercises WHERE name = ?', (log['exercise'],))
-                exercise_row = cursor.fetchone()
-                
-                if not exercise_row:
-                    # Auto-add new exercises if they don't exist yet
-                    cursor.execute("INSERT INTO exercises (name, category) VALUES (?, 'Unknown')", (log['exercise'],))
-                    exercise_id = cursor.lastrowid
-                else:
-                    exercise_id = exercise_row['id']
-                
-                # Insert the set data
-                cursor.execute('''
-                    INSERT INTO workout_logs 
-                    (workout_id, exercise_id, set_number, reps, weight_lbs, rpe)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (
-                    workout_id, exercise_id, log['set'], 
-                    log['reps'], log['weight'], log['rpe']
-                ))
-            
-            conn.commit()
-            return workout_id
-            
-        except Exception as e:
-            conn.rollback()
-            print(f"Database error during save: {e}")
-            raise e
-        finally:
-            conn.close()
+        cursor.execute("SELECT name, primary_muscle, secondary_muscles FROM exercises ORDER BY name ASC")
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
 
+    @staticmethod
+    def save_routine_exercises(template_id: int, exercises_data: list):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM routine_exercises WHERE template_id = ?", (template_id,))
+        for ex in exercises_data:
+            cursor.execute('''
+                INSERT INTO routine_exercises 
+                (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds, is_bodyweight)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ''', (template_id, ex['name'], ex['sets'], ex['min_reps'], ex['max_reps'], ex['weight'], ex['rest']))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def update_routine_targets(template_id: int, adjustments: dict):
+        conn = get_connection()
+        cursor = conn.cursor()
+        for ex_name, data in adjustments.items():
+            cursor.execute('''
+                UPDATE routine_exercises
+                SET target_weight = ?, target_reps_min = ?, target_reps_max = ?
+                WHERE template_id = ? AND exercise_name = ?
+            ''', (data['weight'], data['min_reps'], data['max_reps'], template_id, ex_name))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def get_equipment_inventory() -> dict:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM equipment")
+        items = cursor.fetchall()
+        conn.close()
+        inventory = {'barbell': 45.0, 'plates': []}
+        for item in items:
+            if item['is_barbell']: inventory['barbell'] = item['weight_lbs']
+            else: inventory['plates'].extend([item['weight_lbs']] * (item['quantity'] // 2))
+        inventory['plates'].sort(reverse=True)
+        return inventory
+
+    @staticmethod
+    def save_completed_workout(workout_name: str, duration_minutes: int, bodyweight: float, logs: list) -> int:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO workouts (name, duration_minutes, bodyweight_at_time) VALUES (?, ?, ?)", 
+                       (workout_name, duration_minutes, bodyweight))
+        workout_id = cursor.lastrowid
+        
+        for log in logs:
+            cursor.execute("SELECT id FROM exercises WHERE name = ?", (log['exercise'],))
+            ex_row = cursor.fetchone()
+            if not ex_row: continue
+            
+            cursor.execute('''
+                INSERT INTO workout_logs (workout_id, exercise_id, set_number, reps, weight_lbs, rpe, is_warmup)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (workout_id, ex_row['id'], log['set'], log['reps'], log['weight'], log['rpe'], log.get('is_warmup', False)))
+            
+        conn.commit()
+        conn.close()
+        return workout_id
+    
     @staticmethod
     def get_weekly_tonnage() -> dict:
         """
@@ -167,39 +187,3 @@ class WorkoutDatabaseManager:
                 for sec in [s.strip() for s in ex['secondary_muscles'].split(',')]:
                     volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
         return volume_map
-
-    @staticmethod
-    def update_routine_targets(template_id: int, adjustments: dict):
-        """Saves the approved post-workout progressions directly back to the routine template."""
-        from core.database import get_connection
-        conn = get_connection()
-        cursor = conn.cursor()
-        for ex_name, data in adjustments.items():
-            cursor.execute('''
-                UPDATE routine_exercises
-                SET target_weight = ?, target_reps = ?
-                WHERE template_id = ? AND exercise_name = ?
-            ''', (data['weight'], data['reps'], template_id, ex_name))
-        conn.commit()
-        conn.close()
-
-    @staticmethod
-    def get_equipment_inventory() -> dict:
-        """Fetches barbell weight and available plate pairs."""
-        from core.database import get_connection
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM equipment")
-        items = cursor.fetchall()
-        conn.close()
-        
-        inventory = {'barbell': 45.0, 'plates': []}
-        for item in items:
-            if item['is_barbell']:
-                inventory['barbell'] = item['weight_lbs']
-            else:
-                pairs = item['quantity'] // 2
-                inventory['plates'].extend([item['weight_lbs']] * pairs)
-                
-        inventory['plates'].sort(reverse=True)
-        return inventory
