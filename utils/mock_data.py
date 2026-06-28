@@ -87,6 +87,17 @@ def generate_test_data():
     else:
         print("Historical logs already exist. Skipping history generation.")
 
+    # Seed Bodyweight logs
+    cursor.execute("SELECT COUNT(*) FROM bodyweight_log")
+    if cursor.fetchone()[0] == 0:
+        base_date = datetime.now() - timedelta(days=28)
+        bw = 195.0
+        for i in range(28):
+            date_str = (base_date + timedelta(days=i)).strftime("%Y-%m-%d")
+            bw -= random.uniform(0.0, 0.4) # Simulating progressive weight loss
+            if random.random() > 0.2: 
+                cursor.execute("INSERT INTO bodyweight_log (date, weight_lbs) VALUES (?, ?)", (date_str, round(bw, 1)))
+
     conn.commit()
     conn.close()
     print("Test database update complete.")

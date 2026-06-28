@@ -203,3 +203,102 @@ class WorkoutDatabaseManager:
         exercises = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return exercises
+
+    # --- BODYWEIGHT HUB METHODS ---
+    @staticmethod
+    def log_bodyweight(date_str: str, weight: float):
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO bodyweight_log (date, weight_lbs) VALUES (?, ?)", (date_str, weight))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def get_bodyweight_history():
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT date, weight_lbs FROM bodyweight_log ORDER BY date ASC")
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def get_calisthenics_volume_trend():
+        """Computes Bodyweight + Added Weight volume to prove Calisthenics strength gains."""
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT date(w.date) as date_val, SUM(l.reps * (w.bodyweight_at_time + l.weight_lbs)) as tonnage
+            FROM workout_logs l
+            JOIN workouts w ON l.workout_id = w.id
+            JOIN exercises e ON l.exercise_id = e.id
+            WHERE e.category = 'Bodyweight' AND l.is_warmup = 0
+            GROUP BY date_val ORDER BY date_val ASC
+        ''')
+        res = {row['date_val']: row['tonnage'] for row in cursor.fetchall()}
+        conn.close()
+        return res
+
+    # --- PROGRAM BUILDER METHODS ---
+    @staticmethod
+    def get_all_templates():
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name FROM routine_templates ORDER BY name ASC")
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def save_program(name: str, cycle_length: int, days_data: list):
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("INSERT OR REPLACE INTO programs (name, cycle_length_days) VALUES (?, ?)", (name, cycle_length))
+            cursor.execute("SELECT id FROM programs WHERE name=?", (name,))
+            program_id = cursor.fetchone()['id']
+            
+            cursor.execute("DELETE FROM program_days WHERE program_id=?", (program_id,))
+            for day in days_data:
+                cursor.execute('''
+                    INSERT INTO program_days (program_id, day_number, template_id, is_deload)
+                    VALUES (?, ?, ?, ?)
+                ''', (program_id, day['day_number'], day['template_id'], day['is_deload']))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+            
+    @staticmethod
+    def get_program_volume_map(program_name: str):
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT e.primary_muscle, e.secondary_muscles, SUM(r.target_sets * r.target_reps_max) as total_reps
+            FROM program_days pd
+            JOIN programs p ON pd.program_id = p.id
+            JOIN routine_exercises r ON pd.template_id = r.template_id
+            JOIN exercises e ON r.exercise_name = e.name
+            WHERE p.name = ? AND pd.is_deload = 0
+        ''', (program_name,))
+        rows = cursor.fetchall()
+        conn.close()
+        
+        volume_map = {}
+        for row in rows:
+            if not row['primary_muscle']: continue
+            pri = row['primary_muscle']
+            vol = row['total_reps'] or 0
+            volume_map[pri] = volume_map.get(pri, 0) + vol
+            if row['secondary_muscles']:
+                for sec in [s.strip() for s in row['secondary_muscles'].split(',')]:
+                    volume_map[sec] = volume_map.get(sec, 0) + (vol * 0.5)
+        return volume_map

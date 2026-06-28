@@ -57,20 +57,18 @@ class DashboardView(QWidget):
 
     def refresh_data(self):
         self._highlight_calendar_dates()
-        
-        # Update Heatmap
         volume_map = WorkoutDatabaseManager.get_active_program_volume()
         self.heatmap.update_heatmap(volume_map)
         
-        # Populate Dropdown
         exercises = WorkoutDatabaseManager.get_tracked_exercises()
         self.exercise_dropdown.blockSignals(True)
         self.exercise_dropdown.clear()
+        
+        # NEW: Inject the Bodyweight Proof View to the top of the list!
+        self.exercise_dropdown.addItem("Overview: Weight Loss vs. Calisthenics Strength")
         self.exercise_dropdown.addItems(exercises)
         self.exercise_dropdown.blockSignals(False)
-        
-        if exercises:
-            self._plot_trend_data(exercises[0])
+        self._plot_trend_data(self.exercise_dropdown.currentText())
 
     def _highlight_calendar_dates(self):
         dates = WorkoutDatabaseManager.get_all_workout_dates()
@@ -85,7 +83,57 @@ class DashboardView(QWidget):
             qdate = QDate(y, m, d)
             self.calendar.setDateTextFormat(qdate, fmt)
 
-    def _plot_trend_data(self, exercise_name: str):
+    def _plot_trend_data(self, selection: str):
+        # We must wipe the figure entirely to avoid dual-axis artifacting
+        self.fig.clear()
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor('#1e1e1e')
+        self.fig.patch.set_facecolor('#1e1e1e')
+        
+        if selection == "Overview: Weight Loss vs. Calisthenics Strength":
+            self._plot_bw_vs_calisthenics()
+        else:
+            self._plot_1rm_standard(selection) # (Rename your old plot logic to _plot_1rm_standard)
+
+    def _plot_bw_vs_calisthenics(self):
+        import numpy as np
+        bw_data = WorkoutDatabaseManager.get_bodyweight_history() 
+        cal_data = WorkoutDatabaseManager.get_calisthenics_volume_trend() 
+
+        if not bw_data and not cal_data:
+            self.canvas.draw(); return
+            
+        all_dates = sorted(list(set([d['date'] for d in bw_data] + list(cal_data.keys()))))
+        x_numeric = np.arange(len(all_dates))
+        
+        bw_y = []
+        last_bw = bw_data[0]['weight_lbs'] if bw_data else 180
+        bw_dict = {d['date']: d['weight_lbs'] for d in bw_data}
+        for d in all_dates:
+            last_bw = bw_dict.get(d, last_bw)
+            bw_y.append(last_bw)
+
+        cal_y = [cal_data.get(d, 0) for d in all_dates]
+
+        # Plot 1: Weight Loss Trend
+        self.ax.plot(x_numeric, bw_y, color='#FF9800', marker='o', label='Bodyweight', linewidth=2)
+        self.ax.set_ylabel("Morning Bodyweight (lbs)", color='#FF9800')
+        self.ax.tick_params(axis='y', labelcolor='#FF9800')
+        self.ax.tick_params(axis='x', colors='white')
+        
+        # Plot 2: Calisthenics Tonnage (Proof of Relative Strength)
+        ax2 = self.ax.twinx()
+        ax2.bar(x_numeric, cal_y, color='#2196F3', alpha=0.5, label='Calisthenics Tonnage')
+        ax2.set_ylabel("Total Tonnage (lbs)", color='#2196F3')
+        ax2.tick_params(axis='y', labelcolor='#2196F3')
+        
+        self.ax.set_title("Mathematical Proof: Weight Loss Driving Relative Strength", color='white', pad=15)
+        self.ax.set_xticks(x_numeric)
+        self.ax.set_xticklabels(all_dates, rotation=45)
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+    def _plot_1rm_standard(self, exercise_name: str):
         if not exercise_name: return
         
         self.ax.clear()

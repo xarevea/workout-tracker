@@ -12,6 +12,9 @@ from modules.workout.session import WorkoutSessionController
 from ui.views.dashboard import DashboardView
 from ui.views.routine_builder import RoutineBuilderView
 from ui.views.settings import SettingsView
+from ui.views.bodyweight_hub import BodyweightHubView
+from ui.views.program_builder import ProgramBuilderView
+from utils.gui_utils import add_button_above_stretch
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -25,6 +28,7 @@ class MainWindow(QMainWindow):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
 
+        self.nav_buttons = []
         self._setup_sidebar()
         self._setup_stacked_views()
 
@@ -33,34 +37,30 @@ class MainWindow(QMainWindow):
         self.sidebar.setFixedWidth(200)
         self.sidebar.setStyleSheet("background-color: palette(alternate-base);")
         
-        sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(10, 20, 10, 20)
-        sidebar_layout.setSpacing(10)
+        self.sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar_layout.setContentsMargins(10, 20, 10, 20)
+        self.sidebar_layout.setSpacing(10)
 
         logo = QLabel("HYBRID\nTRACKER")
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo.setStyleSheet("font-size: 20px; font-weight: 900; margin-bottom: 20px;")
-        sidebar_layout.addWidget(logo)
-
-        self.btn_dashboard = QPushButton("Dashboard")
-        self.btn_workout = QPushButton("Active Workout")
-        self.btn_routine = QPushButton("Routine Builder")
-        self.btn_settings = QPushButton("Settings")
-        
-        self.nav_buttons = [self.btn_dashboard, self.btn_workout, self.btn_routine, self.btn_settings]
-        
+        self.sidebar_layout.addWidget(logo)
+                
         for btn in self.nav_buttons:
             btn.setMinimumHeight(40)
-            sidebar_layout.addWidget(btn)
+            self.sidebar_layout.addWidget(btn)
             
-        sidebar_layout.addStretch()
+        self.sidebar_layout.addStretch()
         self.main_layout.addWidget(self.sidebar)
 
     def _setup_stacked_views(self):
+        self._next_idx = 0
+        self._stacked_widget_list = []
         self.stacked_widget = QStackedWidget()
         
         # 1. Dashboard
         self.dashboard_view = DashboardView()
+        self._add_stacked_widget(self.dashboard_view, "Dashboard")
         
         # 2. Active Workout
         self.workout_view = QWidget()
@@ -76,28 +76,40 @@ class MainWindow(QMainWindow):
         
         workout_layout.addWidget(self.minimap, stretch=1)
         workout_layout.addWidget(self.active_tracker, stretch=3)
+        self._add_stacked_widget(self.active_tracker, "Active Workout")
 
         # 3. Routine Builder
         self.routine_view = RoutineBuilderView()
+        self._add_stacked_widget(self.routine_view, "Routine Builder")
 
+        self.program_view = ProgramBuilderView()
+        self._add_stacked_widget(self.program_view, "Program Builder")
+        
+        self.bodyweight_view = BodyweightHubView()
+        self._add_stacked_widget(self.bodyweight_view, "Bodyweight Hub")
+        
         # 4. Settings
         self.settings_view = SettingsView()
-
-        # Add to stack
-        self.stacked_widget.addWidget(self.dashboard_view)
-        self.stacked_widget.addWidget(self.workout_view)
-        self.stacked_widget.addWidget(self.routine_view)
-        self.stacked_widget.addWidget(self.settings_view)
+        self._add_stacked_widget(self.settings_view, "Settings")
         
         self.main_layout.addWidget(self.stacked_widget)
-
-        # Connect Navigation
-        self.btn_dashboard.clicked.connect(lambda: self._switch_view(0))
-        self.btn_workout.clicked.connect(lambda: self._switch_view(1))
-        self.btn_routine.clicked.connect(lambda: self._switch_view(2))
-        self.btn_settings.clicked.connect(lambda: self._switch_view(3))
         
         self._switch_view(0) # Initialize default view
+
+    def _add_stacked_widget(self, widget_view, btn_name: str):
+        # Add to widgets
+        self._stacked_widget_list.append(widget_view)
+        self.stacked_widget.addWidget(widget_view)
+
+        # Add and connect button
+        this_button = QPushButton(btn_name)
+        this_button.clicked.connect(lambda *args, index=self._next_idx: self._switch_view(index))
+        self.nav_buttons.append(this_button)
+
+        # Add the button above the stretch
+        add_button_above_stretch(self.sidebar_layout, this_button)
+
+        self._next_idx += 1
 
     def _switch_view(self, index: int):
         """Switches view, highlights nav, and forces a data refresh."""
@@ -111,11 +123,4 @@ class MainWindow(QMainWindow):
                 btn.setStyleSheet("")
                 
         # Force refresh data so dropdowns are never blank
-        if index == 0:
-            self.dashboard_view.refresh_data()
-        elif index == 1:
-            self.active_tracker.refresh_data()
-        elif index == 2:
-            self.routine_view.refresh_data()
-        elif index == 3:
-            self.settings_view.refresh_data()
+        self._stacked_widget_list[index].refresh_data()
