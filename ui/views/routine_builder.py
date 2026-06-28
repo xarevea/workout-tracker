@@ -58,9 +58,17 @@ class RoutineBuilderView(QWidget):
         header_layout.addWidget(self.btn_analyze)
         right_panel.addLayout(header_layout)
         
-        self.exercise_table = QTableWidget(0, 4)
-        self.exercise_table.setHorizontalHeaderLabels(["Exercise", "Sets", "Reps", "Target Weight"])
-        self.exercise_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.exercise_table = QTableWidget(0, 5) # Now 5 columns
+        self.exercise_table.setHorizontalHeaderLabels(["Exercise", "Sets", "Reps", "Target Weight", "Rest (s)"])
+        
+        # Only the exercise name stretches, the rest resize to contents
+        header = self.exercise_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        
         right_panel.addWidget(self.exercise_table)
 
         btn_layout = QHBoxLayout()
@@ -136,7 +144,7 @@ class RoutineBuilderView(QWidget):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT exercise_name, target_sets, target_reps, target_weight, is_bodyweight 
+            SELECT exercise_name, target_sets, target_reps, target_weight, rest_seconds 
             FROM routine_exercises WHERE template_id = ?
         ''', (template_id,))
         exercises = cursor.fetchall()
@@ -144,9 +152,9 @@ class RoutineBuilderView(QWidget):
 
         for row, ex in enumerate(exercises):
             self.exercise_table.insertRow(row)
-            self._add_validated_row(row, ex['exercise_name'], ex['target_sets'], ex['target_reps'], ex['target_weight'])
+            self._add_validated_row(row, ex['exercise_name'], ex['target_sets'], ex['target_reps'], ex['target_weight'], ex.get('rest_seconds', 90))
 
-    def _add_validated_row(self, row, ex_name, sets=3, reps="8-10", weight=0.0):
+    def _add_validated_row(self, row, ex_name, sets=3, reps="8-10", weight=0.0, rest=90):
         from PyQt6.QtWidgets import QCompleter
         from PyQt6.QtCore import Qt
         
@@ -182,6 +190,13 @@ class RoutineBuilderView(QWidget):
         spin_weight.setSuffix(" lbs")
         spin_weight.setValue(float(weight))
         self.exercise_table.setCellWidget(row, 3, spin_weight)
+
+        spin_rest = QSpinBox()
+        spin_rest.setRange(0, 600)
+        spin_rest.setSingleStep(15)
+        spin_rest.setSuffix(" s")
+        spin_rest.setValue(int(rest))
+        self.exercise_table.setCellWidget(row, 4, spin_rest)
 
     # --- Button Logic ---
     def _on_active_toggled(self, checked):
@@ -261,12 +276,13 @@ class RoutineBuilderView(QWidget):
                 sets = self.exercise_table.cellWidget(row, 1).value()
                 reps = self.exercise_table.cellWidget(row, 2).text()
                 weight = self.exercise_table.cellWidget(row, 3).value()
+                rest = self.exercise_table.cellWidget(row, 4).value()
                 
                 cursor.execute('''
                     INSERT INTO routine_exercises 
-                    (template_id, exercise_name, target_sets, target_reps, target_weight, is_bodyweight)
-                    VALUES (?, ?, ?, ?, ?, 0)
-                ''', (template_id, ex_name, sets, reps, weight))
+                    (template_id, exercise_name, target_sets, target_reps, target_weight, rest_seconds, is_bodyweight)
+                    VALUES (?, ?, ?, ?, ?, ?, 0)
+                ''', (template_id, ex_name, sets, reps, weight, rest))
                 
             conn.commit()
             QMessageBox.information(self, "Success", "Template saved successfully!")

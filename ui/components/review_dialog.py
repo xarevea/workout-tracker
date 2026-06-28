@@ -1,73 +1,67 @@
-# ui/components/review_dialog.py
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QDoubleSpinBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, 
+    QTableWidgetItem, QHeaderView, QDoubleSpinBox, QLineEdit, QWidget
 )
 from PyQt6.QtCore import Qt
 
 class WorkoutReviewDialog(QDialog):
-    def __init__(self, session_logs, progression_suggestions, parent=None):
+    def __init__(self, session_logs, progression_suggestions, current_settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Workout Review & Progression")
-        self.resize(700, 400)
+        self.resize(800, 400)
         self.session_logs = session_logs
         self.suggestions = progression_suggestions
+        self.current_settings = current_settings
         self.final_adjustments = {}
-
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        
-        title = QLabel("Great job! Review your progressions for next time:")
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
-        layout.addWidget(title)
-
         self.table = QTableWidget(len(self.suggestions), 4)
-        self.table.setHorizontalHeaderLabels(["Exercise", "Performance", "Engine Suggestion", "Your Decision (Lbs)"])
+        self.table.setHorizontalHeaderLabels(["Exercise", "Current Target", "Engine Suggestion", "Final Decision"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         
         for row, (exercise_name, data) in enumerate(self.suggestions.items()):
-            # Exercise Name
             self.table.setItem(row, 0, QTableWidgetItem(exercise_name))
             
-            # Performance Summary
-            status = "Hit all targets" if data['target_met'] else "Missed targets"
-            color = "#4CAF50" if data['target_met'] else "#F44336"
-            item_status = QTableWidgetItem(status)
-            item_status.setForeground(Qt.GlobalColor.white)
-            item_status.setBackground(Qt.GlobalColor.darkGreen if data['target_met'] else Qt.GlobalColor.darkRed)
-            self.table.setItem(row, 1, item_status)
+            curr = self.current_settings.get(exercise_name, {})
+            curr_str = f"{curr.get('weight', 0)} lbs @ {curr.get('reps', '')} reps"
+            self.table.setItem(row, 1, QTableWidgetItem(curr_str))
 
-            # Suggestion
-            sugg_text = f"{data['action']}: {data['new_weight']} lbs"
-            self.table.setItem(row, 2, QTableWidgetItem(sugg_text))
+            sugg_text = f"{data['action']}: {data['new_weight']} lbs @ {data['new_reps']}"
+            sugg_item = QTableWidgetItem(sugg_text)
+            if "INCREASE" in data['action']:
+                sugg_item.setBackground(Qt.GlobalColor.darkGreen)
+                sugg_item.setForeground(Qt.GlobalColor.white)
+            self.table.setItem(row, 2, sugg_item)
 
-            # User Decision Spinbox
-            spinbox = QDoubleSpinBox()
-            spinbox.setRange(0, 1000)
-            spinbox.setSingleStep(2.5)
-            spinbox.setValue(data['new_weight'])
-            self.table.setCellWidget(row, 3, spinbox)
+            dec_widget = QWidget()
+            dec_layout = QHBoxLayout(dec_widget)
+            dec_layout.setContentsMargins(0,0,0,0)
             
-            # Store reference to extract later
-            self.final_adjustments[exercise_name] = spinbox
+            spin = QDoubleSpinBox()
+            spin.setRange(0, 1500)
+            spin.setValue(data['new_weight'])
+            
+            line = QLineEdit(data['new_reps'])
+            
+            dec_layout.addWidget(spin)
+            dec_layout.addWidget(line)
+            self.table.setCellWidget(row, 3, dec_widget)
+            
+            self.final_adjustments[exercise_name] = {'spin': spin, 'line': line}
 
         layout.addWidget(self.table)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_approve = QPushButton("Approve & Save Workout")
-        btn_approve.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; height: 30px;")
+        btn_approve = QPushButton("Approve & Update Routine")
+        btn_approve.setStyleSheet("background-color: #4CAF50; color: white; height: 30px;")
         btn_approve.clicked.connect(self.accept)
-        
-        btn_layout.addStretch()
-        btn_layout.addWidget(btn_approve)
-        layout.addLayout(btn_layout)
+        layout.addWidget(btn_approve)
 
     def get_final_targets(self):
-        """Returns the user's final approved weights for the next session."""
         results = {}
-        for exercise, spinbox in self.final_adjustments.items():
-            results[exercise] = spinbox.value()
+        for exercise, widgets in self.final_adjustments.items():
+            results[exercise] = {
+                'weight': widgets['spin'].value(),
+                'reps': widgets['line'].text()
+            }
         return results

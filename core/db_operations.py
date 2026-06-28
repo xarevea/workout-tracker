@@ -167,3 +167,39 @@ class WorkoutDatabaseManager:
                 for sec in [s.strip() for s in ex['secondary_muscles'].split(',')]:
                     volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
         return volume_map
+
+    @staticmethod
+    def update_routine_targets(template_id: int, adjustments: dict):
+        """Saves the approved post-workout progressions directly back to the routine template."""
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        for ex_name, data in adjustments.items():
+            cursor.execute('''
+                UPDATE routine_exercises
+                SET target_weight = ?, target_reps = ?
+                WHERE template_id = ? AND exercise_name = ?
+            ''', (data['weight'], data['reps'], template_id, ex_name))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def get_equipment_inventory() -> dict:
+        """Fetches barbell weight and available plate pairs."""
+        from core.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM equipment")
+        items = cursor.fetchall()
+        conn.close()
+        
+        inventory = {'barbell': 45.0, 'plates': []}
+        for item in items:
+            if item['is_barbell']:
+                inventory['barbell'] = item['weight_lbs']
+            else:
+                pairs = item['quantity'] // 2
+                inventory['plates'].extend([item['weight_lbs']] * pairs)
+                
+        inventory['plates'].sort(reverse=True)
+        return inventory

@@ -138,8 +138,11 @@ class ActiveTrackerWidget(QWidget):
         text_layout = QVBoxLayout()
         self.lbl_exercise_name = QLabel("Select a template...")
         self.lbl_exercise_name.setFont(QFont("Arial", 24, QFont.Weight.Bold))
+        self.lbl_loadout = QLabel("") # NEW: Plate Loadout
+        self.lbl_loadout.setStyleSheet("color: #2196F3; font-weight: bold;")
         self.lbl_set_tracker = QLabel("-")
         text_layout.addWidget(self.lbl_exercise_name)
+        text_layout.addWidget(self.lbl_loadout)
         text_layout.addWidget(self.lbl_set_tracker)
         
         self.exercise_heatmap = AnatomicalHeatmap()
@@ -224,7 +227,6 @@ class ActiveTrackerWidget(QWidget):
 
     def _update_clock(self):
         if not self.controller.is_active: return
-        self.workout_seconds += 1
         
         if self.rest_seconds > 0:
             self.rest_seconds -= 1
@@ -238,18 +240,19 @@ class ActiveTrackerWidget(QWidget):
                 self._play_sound("bell")
                 self._skip_rest() 
         else:
+            self.workout_seconds += 1 # ONLY runs during active sets
             mins, secs = divmod(self.workout_seconds, 60)
             self.lbl_timer.setText(f"{mins:02d}:{secs:02d}")
-            self.lbl_timer.setStyleSheet("color: #4CAF50;") 
+            self.lbl_timer.setStyleSheet("color: #4CAF50;")
 
     def _add_rest_time(self, seconds: int): self.rest_seconds += seconds
 
     def _skip_rest(self):
         self.rest_seconds = 0
+        self.workout_seconds = 0 # ZERO OUT THE SET TIMER
         self.rest_container.hide()
         self.log_group.setEnabled(True)
-        mins, secs = divmod(self.workout_seconds, 60)
-        self.lbl_timer.setText(f"{mins:02d}:{secs:02d}")
+        self.lbl_timer.setText("00:00")
         self.lbl_timer.setStyleSheet("color: #4CAF50;")
 
     def _update_display(self):
@@ -269,7 +272,15 @@ class ActiveTrackerWidget(QWidget):
 
         self.lbl_exercise_name.setText(current_ex['name'])
         self.lbl_set_tracker.setText(f"Set {self.controller.current_set} of {current_ex['target_sets']}")
-        
+
+        from modules.equipment.plate_calculator import PlateCalculator
+        loadout = PlateCalculator.calculate_loadout(current_ex['target_weight'])
+        if loadout is not None and len(loadout) > 0:
+            formatted_plates = " | ".join([f"{p}lb" for p in loadout])
+            self.lbl_loadout.setText(f"Loadout per side: [ {formatted_plates} ]")
+        else:
+            self.lbl_loadout.setText("")
+
         self.spin_weight.setValue(current_ex['target_weight'])
         target_rep_val = int(str(current_ex['target_reps']).split('-')[-1]) if '-' in str(current_ex['target_reps']) else int(current_ex['target_reps'])
         self.spin_reps.setValue(target_rep_val)
@@ -312,6 +323,7 @@ class ActiveTrackerWidget(QWidget):
             self.log_group.setEnabled(False)
 
     def _trigger_workout_review(self):
+        from ui.components.review_dialog import WorkoutReviewDialog
         self.timer.stop() # Freeze the UI clock
         workout_data = self.controller.finish_workout()
         
@@ -352,8 +364,15 @@ class ActiveTrackerWidget(QWidget):
 
         # 3. Pop up the Review Dialog
         from ui.components.review_dialog import WorkoutReviewDialog
-        dialog = WorkoutReviewDialog(workout_data['logs'], suggestions, self)
-        dialog.exec() 
+        current_settings = {ex['name']: {'weight': ex['target_weight'], 'reps': ex['target_reps']} for ex in self.controller.exercises}
+        
+        dialog = WorkoutReviewDialog(workout_data['logs'], suggestions, current_settings, self)
+        
+        if dialog.exec():
+            final_targets = dialog.get_final_targets()
+            template_id = self.combo_workout_selector.currentData()
+            from core.db_operations import WorkoutDatabaseManager
+            WorkoutDatabaseManager.update_routine_targets(template_id, final_targets) 
         
         # 4. Save to Database
         from core.db_operations import WorkoutDatabaseManager
