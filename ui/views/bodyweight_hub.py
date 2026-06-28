@@ -1,4 +1,5 @@
 # ui/views/bodyweight_hub.py
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox, 
     QCalendarWidget, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView
@@ -42,10 +43,27 @@ class BodyweightHubView(QWidget):
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Date Recorded", "Morning Weight (lbs)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+        
         right.addWidget(self.table)
         layout.addLayout(right, stretch=1)
         
         self.refresh_data()
+
+    def _show_context_menu(self, pos):
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu()
+        delete_action = menu.addAction("Delete Entry")
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        
+        if action == delete_action:
+            row = self.table.rowAt(pos.y())
+            if row >= 0:
+                date_str = self.table.item(row, 0).text()
+                # You'll need to add delete_bodyweight_log(date_str) to db_operations
+                WorkoutDatabaseManager.delete_bodyweight_log(date_str)
+                self.refresh_data()
 
     def refresh_data(self):
         self.table.setRowCount(0)

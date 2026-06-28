@@ -14,7 +14,7 @@ from ui.views.routine_builder import RoutineBuilderView
 from ui.views.settings import SettingsView
 from ui.views.bodyweight_hub import BodyweightHubView
 from ui.views.program_builder import ProgramBuilderView
-from utils.gui_utils import add_button_above_stretch
+from utils.gui_utils import add_button_above_stretch, create_sidebar_button
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -45,10 +45,6 @@ class MainWindow(QMainWindow):
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo.setStyleSheet("font-size: 20px; font-weight: 900; margin-bottom: 20px;")
         self.sidebar_layout.addWidget(logo)
-                
-        for btn in self.nav_buttons:
-            btn.setMinimumHeight(40)
-            self.sidebar_layout.addWidget(btn)
             
         self.sidebar_layout.addStretch()
         self.main_layout.addWidget(self.sidebar)
@@ -102,7 +98,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(widget_view)
 
         # Add and connect button
-        this_button = QPushButton(btn_name)
+        this_button = create_sidebar_button(btn_name)
         this_button.clicked.connect(lambda *args, index=self._next_idx: self._switch_view(index))
         self.nav_buttons.append(this_button)
 

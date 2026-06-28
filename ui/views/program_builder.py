@@ -54,9 +54,14 @@ class ProgramBuilderView(QWidget):
         top.addWidget(btn_analyze)
         self.layout.addLayout(top)
         
+        # Fix for Program Builder squishing
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Day #", "Routine Template", "Periodization Flag"])
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)          # Template Name Stretches
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        
         self.layout.addWidget(self.table)
         
     def refresh_data(self):
@@ -75,7 +80,7 @@ class ProgramBuilderView(QWidget):
                 combo.addItem(t['name'], userData=t['id'])
             self.table.setCellWidget(i, 1, combo)
             
-            chk = QCheckBox("Mark as Deload Day (Reduces Load via Engine)")
+            chk = QCheckBox("Deload Day")
             self.table.setCellWidget(i, 2, chk)
 
     def _save_program(self):

@@ -54,12 +54,13 @@ class RoutineBuilderView(QWidget):
         self.exercise_table = QTableWidget(0, 7) 
         self.exercise_table.setHorizontalHeaderLabels(["Order", "Exercise", "Sets", "Min Reps", "Max Reps", "Weight", "Rest (s)"])
         
+        # Ensure Exercise name stretches, others wrap to content
         header = self.exercise_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents) # Up/Down arrows
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)          # Exercise Name gets all extra room
         for i in range(2, 7):
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-            
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents) # Sets, Reps, Wt, Rest
+
         right_panel.addWidget(self.exercise_table)
 
         btn_layout = QHBoxLayout()
@@ -144,8 +145,14 @@ class RoutineBuilderView(QWidget):
         
         # 2-6. SPINBOXES
         spin_sets = QSpinBox(); spin_sets.setValue(int(sets))
-        spin_min = QSpinBox(); spin_min.setValue(int(min_r))
-        spin_max = QSpinBox(); spin_max.setValue(int(max_r))
+        # Create the spinboxes
+        spin_min = QSpinBox()
+        spin_min.setValue(int(min_r))
+        spin_max = QSpinBox()
+        spin_max.setValue(int(max_r))
+        spin_min.valueChanged.connect(lambda val: spin_max.setMinimum(val))
+        spin_max.valueChanged.connect(lambda val: spin_min.setMaximum(val))
+
         spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1500); spin_wt.setValue(float(weight))
         spin_rest = QSpinBox(); spin_rest.setRange(0, 600); spin_rest.setSingleStep(15); spin_rest.setValue(int(rest))
         

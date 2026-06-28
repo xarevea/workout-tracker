@@ -35,23 +35,22 @@ class ActiveTrackerWidget(QWidget):
         self._setup_timers()
 
     def refresh_data(self):
-        """Loads available active templates to select from."""
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name FROM routine_templates WHERE is_active=1")
-        templates = cursor.fetchall()
-        conn.close()
+        """Only reload templates if a workout is NOT currently active."""
+        if self.controller.is_active:
+            return # Protect the active state!
 
         self.combo_workout_selector.blockSignals(True)
         self.combo_workout_selector.clear()
         
+        # [NEW FEATURE] Pre-select today's programmed workout
+        from datetime import datetime
+        # (You will need to write a DB method 'get_todays_program_template()' that calculates what day of the cycle it is)
+        
+        from core.db_operations import WorkoutDatabaseManager
+        templates = WorkoutDatabaseManager.get_all_templates()
         for t in templates:
             self.combo_workout_selector.addItem(t['name'], userData=t['id'])
-            
         self.combo_workout_selector.blockSignals(False)
-        
-        if templates:
-            self._load_selected_workout()
 
     def _load_selected_workout(self):
         template_id = self.combo_workout_selector.currentData()
@@ -284,10 +283,11 @@ class ActiveTrackerWidget(QWidget):
             return
 
         self.lbl_exercise_name.setText(current_ex['name'])
-        self.lbl_set_tracker.setText(f"Set {self.controller.current_set} of {current_ex['target_sets']}")
+        self.lbl_set_tracker.setText(f"Set {self.controller.current_set} of {current_ex['target_sets']}  |  Target: {current_ex['target_reps_min']} - {current_ex['target_reps_max']} Reps")
         
         self.spin_weight.setValue(current_ex['target_weight'])
-        self.spin_reps.setValue(current_ex['target_reps_max']) # FIXED
+        self.spin_reps.setValue(current_ex['target_reps_max'])
+        
         self.minimap.set_active_node(self.controller.current_exercise_index)
         self.chk_warmup.setChecked(False) 
 
