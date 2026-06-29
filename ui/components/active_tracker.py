@@ -154,7 +154,7 @@ class ActiveTrackerWidget(QWidget):
         text_layout.addWidget(self.lbl_set_tracker)
         
         self.exercise_heatmap = AnatomicalHeatmap()
-        self.exercise_heatmap.setFixedSize(300, 200) # Compact heatmap
+        # self.exercise_heatmap.setFixedSize(300, 200) # Compact heatmap
         
         info_layout.addLayout(text_layout)
         info_layout.addWidget(self.exercise_heatmap)

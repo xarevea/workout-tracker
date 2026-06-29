@@ -8,16 +8,33 @@ def generate_test_data():
     cursor = conn.cursor()
     print("Initializing test data seed...")
 
-    # 1. Seed Exercises
+    # 1. Seed Exercises (Granular SVG Mapping)
     exercises = [
-        ("Bench Press", "Barbell", "Chest", "Triceps, Shoulders"),
-        ("Barbell Back Squats", "Barbell", "Quads", "Glutes, Core, Hamstrings"),
-        ("Weighted Pull-Ups", "Bodyweight", "Back", "Biceps, Core"),
-        ("Barbell Overhead Press", "Barbell", "Shoulders", "Triceps, Core"),
-        ("Romanian Deadlifts (RDL)", "Barbell", "Hamstrings", "Glutes, Back"),
-        ("Calf Raises", "Dumbbell", "Calves", ""),
-        ("Hanging Leg Raises", "Bodyweight", "Core", "")
+        # --- CALISTHENICS / BODYWEIGHT ---
+        ("Pull-Ups", "Bodyweight", "latissimus", "biceps, trapezius, forearm"),
+        ("Push-Ups", "Bodyweight", "chest", "triceps, deltoids, abs"),
+        ("Dips", "Bodyweight", "triceps", "chest, deltoids"),
+        ("Pistol Squats", "Bodyweight", "quadriceps", "gluteal, calves, abs"),
+        ("Hanging Leg Raises", "Bodyweight", "abs", "obliques, forearm"),
+        ("Front Lever", "Bodyweight", "latissimus", "abs, triceps, deltoids"),
+        ("Muscle-Ups", "Bodyweight", "latissimus", "chest, triceps, biceps, abs"),
+        ("Plank", "Bodyweight", "abs", "obliques, deltoids"),
+        ("Inverted Rows", "Bodyweight", "latissimus", "biceps, trapezius"),
+        ("Handstand Push-Ups", "Bodyweight", "deltoids", "triceps, trapezius, abs"),
+        
+        # --- BARBELL / DUMBBELL (Home Gym) ---
+        ("Bench Press", "Barbell", "chest", "triceps, deltoids"),
+        ("Barbell Squat", "Barbell", "quadriceps", "gluteal, hamstring, lower-back, calves"),
+        ("Deadlift", "Barbell", "hamstring", "gluteal, lower-back, trapezius, latissimus, forearm"),
+        ("Overhead Press", "Barbell", "deltoids", "triceps, trapezius, abs"),
+        ("Barbell Row", "Barbell", "latissimus", "trapezius, biceps, lower-back"),
+        ("Romanian Deadlift", "Barbell", "hamstring", "gluteal, lower-back"),
+        ("Bicep Curls", "Dumbbell", "biceps", "forearm"),
+        ("Tricep Extensions", "Dumbbell", "triceps", ""),
+        ("Calf Raises", "Dumbbell", "calves", ""),
+        ("Lunges", "Dumbbell", "quadriceps", "gluteal, hamstring")
     ]
+    
     for name, cat, pri, sec in exercises:
         cursor.execute('''
             INSERT INTO exercises (name, category, primary_muscle, secondary_muscles) 

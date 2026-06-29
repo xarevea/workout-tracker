@@ -1,95 +1,134 @@
 # ui/components/body_heatmap.py
-import numpy as np
-from PyQt6.QtWidgets import QWidget, QVBoxLayout
-import matplotlib
-matplotlib.use('QtAgg')
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.patches as patches
+import json
+import os
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
+from PyQt6.QtSvgWidgets import QSvgWidget
+from PyQt6.QtCore import Qt
 
-class AnatomicalHeatmap(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        
-        self.fig = Figure(figsize=(8, 5), dpi=100)
-        self.fig.patch.set_facecolor('#1e1e1e')
-        self.canvas = FigureCanvas(self.fig)
-        layout.addWidget(self.canvas)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-    def _get_color(self, sets):
+class MuscleMapper:
+    """Utility class mapping high-level logical groups to specific SVG muscle slugs."""
+    
+    # Mappings allowing group highlighting by region
+    REGION_MAP = {
+        "Chest": ["chest"],
+        "Back": ["latissimus", "trapezius", "lower-back"],
+        "Core": ["abs", "obliques"],
+        "Arms": ["biceps", "triceps", "forearm"],
+        "Shoulders": ["deltoids"],
+        "Legs": ["quadriceps", "hamstring", "calves", "gluteal", "adductors"],
+    }
+    
+    @staticmethod
+    def get_color(sets: float) -> str:
         """Standard weekly volume targets for hypertrophy."""
         if sets == 0: return '#333333'      # Unused (Dark Gray)
         elif sets < 8: return '#2196F3'     # Underworked (Blue)
         elif sets <= 20: return '#4CAF50'   # Optimal (Green)
         else: return '#F44336'              # Overworked (Red)
 
-    def update_heatmap(self, volume_map):
-        self.fig.clear()
+class AnatomicalHeatmap(QWidget):
+    def __init__(self, parent=None, data_path='male_model_data.json'):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        self.setFixedSize(400, 250) 
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         
-        # Two subplots: Anterior (Front) and Posterior (Back)
-        ax_ant = self.fig.add_subplot(121)
-        ax_post = self.fig.add_subplot(122)
+        # Load parsed SVG data 
+        if os.path.exists(data_path):
+            with open(data_path, 'r', encoding='utf-8') as f:
+                self.model_data = json.load(f)
+        else:
+            # Fallback structure if the json is missing
+            self.model_data = {
+                "front": {"border": "", "muscles": {}, "viewBox": "0 0 724 1448"}, 
+                "back": {"border": "", "muscles": {}, "viewBox": "724 0 724 1448"}
+            }
+                
+        # --- UI Layout ---
+        svg_layout = QHBoxLayout()
+        
+        # Anterior View
+        ant_layout = QVBoxLayout()
+        ant_label = QLabel("Anterior (Front)")
+        ant_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ant_label.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
+        self.front_svg = QSvgWidget()
+        self.front_svg.renderer().setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        ant_layout.addWidget(ant_label)
+        ant_layout.addWidget(self.front_svg)
+        ant_layout.addStretch()
+        
+        # Posterior View
+        post_layout = QVBoxLayout()
+        post_label = QLabel("Posterior (Back)")
+        post_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        post_label.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
+        self.back_svg = QSvgWidget()
+        self.back_svg.renderer().setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        post_layout.addWidget(post_label)
+        post_layout.addWidget(self.back_svg)
+        post_layout.addStretch()
+        
+        svg_layout.addLayout(ant_layout)
+        svg_layout.addLayout(post_layout)
+        svg_layout.addStretch()
+        self.layout.addLayout(svg_layout)
+        self.layout.addStretch()
 
-        for ax in [ax_ant, ax_post]:
-            ax.set_facecolor('#1e1e1e')
-            ax.set_xlim(-1, 1)
-            ax.set_ylim(-1, 1)
-            ax.axis('off')
+    def update_heatmap(self, volume_map: dict):
+        """Translates the DB volume map into SVG colors."""
+        
+        # 1. Flatten into granular slugs
+        slug_volume = {}
+        for key, sets in volume_map.items():
+            key_str = str(key).strip()
+            
+            # Check if this key is a high-level grouping
+            matched_group = False
+            for region, slugs in MuscleMapper.REGION_MAP.items():
+                if key_str.lower() == region.lower():
+                    for slug in slugs:
+                        slug_volume[slug] = slug_volume.get(slug, 0) + sets
+                    matched_group = True
+                    break
+            
+            # If not a group, it's a direct slug (e.g., 'biceps', 'latissimus')
+            if not matched_group:
+                slug_volume[key_str.lower()] = slug_volume.get(key_str.lower(), 0) + sets
 
-        ax_ant.set_title("Anterior (Front)", color='white', pad=10)
-        ax_post.set_title("Posterior (Back)", color='white', pad=10)
+        # 2. Map calculated sets to SVG colors
+        slug_colors = {slug: MuscleMapper.get_color(sets) for slug, sets in slug_volume.items()}
 
-        # --- DRAW ANTERIOR MUSCLES ---
-        # Chest
-        ax_ant.add_patch(patches.Ellipse((-0.25, 0.4), 0.4, 0.3, color=self._get_color(volume_map.get("Chest", 0))))
-        ax_ant.add_patch(patches.Ellipse((0.25, 0.4), 0.4, 0.3, color=self._get_color(volume_map.get("Chest", 0))))
-        ax_ant.text(0, 0.4, "Chest", color='white', ha='center', va='center', fontsize=8, fontweight='bold')
+        # 3. Generate SVGs
+        front_xml = self._generate_svg('front', slug_colors)
+        back_xml = self._generate_svg('back', slug_colors)
+        
+        self.front_svg.load(front_xml.encode('utf-8'))
+        self.back_svg.load(back_xml.encode('utf-8'))
 
-        # Core/Abs
-        ax_ant.add_patch(patches.Rectangle((-0.3, -0.1), 0.6, 0.4, color=self._get_color(volume_map.get("Core", 0))))
-        ax_ant.text(0, 0.1, "Core", color='white', ha='center', va='center', fontsize=8, fontweight='bold')
-
-        # Quads
-        ax_ant.add_patch(patches.Ellipse((-0.25, -0.5), 0.3, 0.6, color=self._get_color(volume_map.get("Quads", 0))))
-        ax_ant.add_patch(patches.Ellipse((0.25, -0.5), 0.3, 0.6, color=self._get_color(volume_map.get("Quads", 0))))
-        ax_ant.text(0, -0.5, "Quads", color='white', ha='center', va='center', fontsize=8, fontweight='bold')
-
-        # Shoulders & Biceps
-        ax_ant.add_patch(patches.Circle((-0.6, 0.5), 0.15, color=self._get_color(volume_map.get("Shoulders", 0))))
-        ax_ant.add_patch(patches.Circle((0.6, 0.5), 0.15, color=self._get_color(volume_map.get("Shoulders", 0))))
-        ax_ant.add_patch(patches.Ellipse((-0.65, 0.2), 0.2, 0.3, color=self._get_color(volume_map.get("Biceps", 0))))
-        ax_ant.add_patch(patches.Ellipse((0.65, 0.2), 0.2, 0.3, color=self._get_color(volume_map.get("Biceps", 0))))
-
-        # --- DRAW POSTERIOR MUSCLES ---
-        # Back (Lats/Traps)
-        back_poly = np.array([[-0.4, 0.6], [0.4, 0.6], [0.2, 0.0], [-0.2, 0.0]])
-        ax_post.add_patch(patches.Polygon(back_poly, color=self._get_color(volume_map.get("Back", 0))))
-        ax_post.text(0, 0.4, "Back", color='white', ha='center', va='center', fontsize=8, fontweight='bold')
-
-        # Hamstrings & Glutes
-        ax_post.add_patch(patches.Ellipse((-0.25, -0.4), 0.35, 0.5, color=self._get_color(volume_map.get("Hamstrings", 0))))
-        ax_post.add_patch(patches.Ellipse((0.25, -0.4), 0.35, 0.5, color=self._get_color(volume_map.get("Hamstrings", 0))))
-        ax_post.text(0, -0.4, "Hamstrings", color='white', ha='center', va='center', fontsize=8, fontweight='bold')
-
-        # Calves
-        ax_post.add_patch(patches.Ellipse((-0.25, -0.85), 0.2, 0.25, color=self._get_color(volume_map.get("Calves", 0))))
-        ax_post.add_patch(patches.Ellipse((0.25, -0.85), 0.2, 0.25, color=self._get_color(volume_map.get("Calves", 0))))
-
-        # Triceps
-        ax_post.add_patch(patches.Ellipse((-0.65, 0.2), 0.2, 0.3, color=self._get_color(volume_map.get("Triceps", 0))))
-        ax_post.add_patch(patches.Ellipse((0.65, 0.2), 0.2, 0.3, color=self._get_color(volume_map.get("Triceps", 0))))
-
-        # Legend
-        self.fig.legend(
-            handles=[
-                patches.Patch(color='#2196F3', label='Underworked (<8 sets)'),
-                patches.Patch(color='#4CAF50', label='Optimal (8-20 sets)'),
-                patches.Patch(color='#F44336', label='Overworked (>20 sets)')
-            ],
-            loc='lower center', ncol=3, facecolor='#2d2d2d', edgecolor='#555555', labelcolor='white'
-        )
-
-        self.fig.tight_layout()
-        self.canvas.draw()
+    def _generate_svg(self, side: str, slug_colors: dict) -> str:
+        data = self.model_data[side]
+        viewBox = data['viewBox']
+        border_path = data['border']
+        muscles = data['muscles']
+        
+        svg_parts = [f'<svg viewBox="{viewBox}" xmlns="http://www.w3.org/2000/svg">']
+        
+        for slug, muscle_data in muscles.items():
+            # Apply identical color to both left and right sides (Forced Symmetry)
+            color = slug_colors.get(slug, '#333333') # Default Dark Gray
+            
+            svg_parts.append(f'<g id="{slug}" fill="{color}">')
+            # Extract both arrays safely and render
+            paths = muscle_data.get('left', []) + muscle_data.get('right', [])
+            for path in paths:
+                svg_parts.append(f'  <path d="{path}" />')
+            svg_parts.append('</g>')
+            
+        if border_path:
+            svg_parts.append(f'<path d="{border_path}" fill="none" stroke="#1c1c1c" stroke-width="2" />')
+            
+        svg_parts.append('</svg>')
+        return "\n".join(svg_parts)
