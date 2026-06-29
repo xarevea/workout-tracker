@@ -16,6 +16,24 @@ from ui.views.bodyweight_hub import BodyweightHubView
 from ui.views.program_builder import ProgramBuilderView
 from utils.gui_utils import add_button_above_stretch, create_sidebar_button
 
+class WorkoutContainer(QWidget):
+    def __init__(self, minimap, active_tracker, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Add the widgets
+        layout.addWidget(minimap, stretch=1)
+        layout.addWidget(active_tracker, stretch=3)
+        
+        # Keep a reference to the tracker so we can route the refresh call
+        self.active_tracker = active_tracker
+
+    def refresh_data(self):
+        # Route the refresh down to the actual active tracker
+        if hasattr(self.active_tracker, 'refresh_data'):
+            self.active_tracker.refresh_data()
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -107,10 +125,12 @@ class MainWindow(QMainWindow):
             minimap=self.minimap,
             global_timer_lbl=self.lbl_global_timer,
         )
+
+        self.workout_container = WorkoutContainer(self.minimap, self.active_tracker)
         
-        workout_layout.addWidget(self.minimap, stretch=1)
-        workout_layout.addWidget(self.active_tracker, stretch=3)
-        self._add_stacked_widget(self.active_tracker, "Active Workout")
+        # workout_layout.addWidget(self.minimap, stretch=1)
+        # workout_layout.addWidget(self.active_tracker, stretch=3)
+        self._add_stacked_widget(self.workout_container, "Active Workout")
 
         # 3. Routine Builder
         self.routine_view = RoutineBuilderView()

@@ -2,6 +2,7 @@
 import sys
 import argparse
 from PyQt6.QtWidgets import QApplication
+from utils.theme_manager import apply_theme
 import qdarktheme
 
 from core.database import initialize_database
@@ -24,11 +25,11 @@ def main():
 
     # 4. Boot UI
     app = QApplication(sys.argv)
+    # apply_theme(app, theme_name="catppuccin")
     qdarktheme.setup_theme(theme="dark", custom_colors={"primary": "#4CAF50"})
 
     window = MainWindow()
     window.show()
-
     sys.exit(app.exec())
 
 if __name__ == "__main__":

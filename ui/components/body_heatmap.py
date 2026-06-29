@@ -31,6 +31,7 @@ class AnatomicalHeatmap(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
 
+        self.setMaximumHeight(360)
         self.setMinimumSize(300, 200) 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
@@ -50,21 +51,18 @@ class AnatomicalHeatmap(QWidget):
         ant_layout = QVBoxLayout()
         ant_label = QLabel("Anterior")
         ant_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ant_label.setStyleSheet("color: #888888; font-size: 12px; font-weight: bold; text-transform: uppercase;")
-        self.front_svg = QSvgWidget()
-        # Ensure PyQt respects the SVG's internal aspect ratio request
-        self.front_svg.renderer().setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
         ant_layout.addWidget(ant_label)
-        ant_layout.addWidget(self.front_svg)
+        self.front_svg = QSvgWidget()
+        # self.front_svg.renderer().setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        ant_layout.addWidget(self.front_svg, 1, Qt.AlignmentFlag.AlignCenter) 
         
         post_layout = QVBoxLayout()
         post_label = QLabel("Posterior")
         post_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        post_label.setStyleSheet("color: #888888; font-size: 12px; font-weight: bold; text-transform: uppercase;")
-        self.back_svg = QSvgWidget()
-        self.back_svg.renderer().setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
         post_layout.addWidget(post_label)
-        post_layout.addWidget(self.back_svg)
+        self.back_svg = QSvgWidget()
+        # self.back_svg.renderer().setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        post_layout.addWidget(self.back_svg, 1, Qt.AlignmentFlag.AlignCenter) 
         
         svg_layout.addLayout(ant_layout)
         svg_layout.addLayout(post_layout)
@@ -107,8 +105,8 @@ class AnatomicalHeatmap(QWidget):
         border_path = data['border']
         muscles = data['muscles']
         
-        svg_parts = [f'<svg viewBox="{viewBox}" preserveAspectRatio="xMidYMid meet" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">']
-        
+        svg_parts = [f'<svg viewBox="{viewBox}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">']
+
         for slug, muscle_data in muscles.items():
             color = slug_colors.get(slug, '#333333') 
             svg_parts.append(f'<g id="{slug}" fill="{color}">')

@@ -1,7 +1,9 @@
 import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QSpinBox, QDoubleSpinBox, QSlider, QGroupBox, QScrollArea, QComboBox, QCheckBox
+    QPushButton, QSpinBox, QDoubleSpinBox, QSlider, 
+    QGroupBox, QScrollArea, QComboBox, QCheckBox,
+    QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QFont, QIcon
@@ -187,6 +189,12 @@ class ActiveTrackerWidget(QWidget):
         self.spin_reps.setRange(0, 100)
         self.spin_reps.setSuffix(" reps")
 
+        self.is_static_mode = False 
+        self.btn_toggle_static = QPushButton("⏱")
+        self.btn_toggle_static.setToolTip("Toggle Reps / Time (s)")
+        self.btn_toggle_static.setFixedWidth(40)
+        self.btn_toggle_static.clicked.connect(self._toggle_static_mode)
+
         input_layout.addWidget(QLabel("Weight:"))
         input_layout.addWidget(self.spin_weight)
         input_layout.addWidget(QLabel("Reps:"))
@@ -236,6 +244,13 @@ class ActiveTrackerWidget(QWidget):
         scroll.setMaximumHeight(150)
         layout.addWidget(scroll)
 
+    def _toggle_static_mode(self):
+        self.is_static_mode = not self.is_static_mode
+        if self.is_static_mode:
+            self.spin_reps.setSuffix(" sec")
+        else:
+            self.spin_reps.setSuffix(" reps")
+    
     def _setup_timers(self):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_clock)
@@ -295,6 +310,7 @@ class ActiveTrackerWidget(QWidget):
 
     def _update_display(self):
         current_ex = self.controller.get_current_exercise()
+        self.minimap.set_active_node(self.controller.current_exercise_index)
         for i in reversed(range(self.history_layout.count())): 
             widget = self.history_layout.itemAt(i).widget()
             if widget: widget.setParent(None)
