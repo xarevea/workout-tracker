@@ -26,7 +26,11 @@ def main():
     # 4. Boot UI
     app = QApplication(sys.argv)
     # apply_theme(app, theme_name="catppuccin")
-    qdarktheme.setup_theme(theme="dark", custom_colors={"primary": "#4CAF50"})
+    qdarktheme.setup_theme(
+        theme="dark",          
+        corner_shape="sharp",  
+        custom_colors={"primary": "#4CAF50"}  
+    )
 
     window = MainWindow()
     window.show()

@@ -31,13 +31,25 @@ def apply_theme(app: QApplication, theme_name: str = "catppuccin"):
         padding: 0 4px; border-radius: 4px; font-weight: bold;
     }}
     QPushButton {{
-        background-color: {colors['surface2']}; border: none; 
-        border-radius: 6px; padding: 8px 16px; color: {colors['text']}; font-weight: bold;
+        background-color: {colors['surface2']};
+        border: none;
+        border-radius: 4px;
+        padding: 4px 8px; /* Tighter padding so toggle buttons don't explode */
+        color: {colors['text']};
     }}
-    QPushButton:hover {{ background-color: {colors['primary']}; color: {colors['bg']}; }}
-    QSpinBox, QDoubleSpinBox, QComboBox, QSlider {{
-        background-color: {colors['bg']}; border: 1px solid {colors['border']};
-        border-radius: 4px; padding: 6px; color: {colors['text']};
+    QPushButton:hover {{
+        background-color: {colors['primary']};
+        color: {colors['bg']};
+    }}
+    QPushButton#primary_action {{
+        background-color: {colors['primary']};
+        color: {colors['bg']};
+        font-weight: bold;
+        padding: 8px 16px; /* The nice, thick padding you like */
+        border-radius: 6px;
+    }}
+    QPushButton#primary_action:hover {{
+        background-color: {colors['text']};
     }}
     """
     app.setStyleSheet(qss)

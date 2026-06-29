@@ -40,20 +40,18 @@ class ActiveTrackerWidget(QWidget):
     def refresh_data(self):
         """Only reload templates if a workout is NOT currently active."""
         if self.controller.is_active:
-            return # Protect the active state!
+            return 
 
         self.combo_workout_selector.blockSignals(True)
         self.combo_workout_selector.clear()
         
-        # [NEW FEATURE] Pre-select today's programmed workout
-        from datetime import datetime
-        # (You will need to write a DB method 'get_todays_program_template()' that calculates what day of the cycle it is)
-        
-        from core.db_operations import WorkoutDatabaseManager
         templates = WorkoutDatabaseManager.get_all_templates()
         for t in templates:
             self.combo_workout_selector.addItem(t['name'], userData=t['id'])
         self.combo_workout_selector.blockSignals(False)
+
+        if self.combo_workout_selector.count() > 0:
+            self._load_selected_workout()
 
     def _load_selected_workout(self):
         template_id = self.combo_workout_selector.currentData()
