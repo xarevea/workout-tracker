@@ -136,28 +136,43 @@ class ActiveTrackerWidget(QWidget):
         self.rest_layout.addWidget(self.btn_add_time)
         self.rest_layout.addWidget(self.btn_skip_rest)
         self.rest_layout.addStretch()
+        
         self.rest_container = QWidget()
         self.rest_container.setLayout(self.rest_layout)
+
+        sp = self.rest_container.sizePolicy()
+        sp.setRetainSizeWhenHidden(True)
+        self.rest_container.setSizePolicy(sp)
+        
         self.rest_container.hide()
         layout.addWidget(self.rest_container)
 
         # --- EXERCISE INFO & HEATMAP ---
         info_layout = QHBoxLayout()
         text_layout = QVBoxLayout()
+        
+        # Progress Indicator
+        self.lbl_progress = QLabel("EXERCISE - OF -")
+        self.lbl_progress.setStyleSheet("color: #888888; font-size: 14px; font-weight: bold; letter-spacing: 1px;")
+        
         self.lbl_exercise_name = QLabel("Select a template...")
         self.lbl_exercise_name.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        self.lbl_loadout = QLabel("") # NEW: Plate Loadout
+        self.lbl_loadout = QLabel("") 
         self.lbl_loadout.setStyleSheet("color: #2196F3; font-weight: bold;")
         self.lbl_set_tracker = QLabel("-")
+        
+        text_layout.addWidget(self.lbl_progress) # Add progress above the name
         text_layout.addWidget(self.lbl_exercise_name)
         text_layout.addWidget(self.lbl_loadout)
         text_layout.addWidget(self.lbl_set_tracker)
+        text_layout.addStretch() # Push text to top
         
         self.exercise_heatmap = AnatomicalHeatmap()
-        # self.exercise_heatmap.setFixedSize(300, 200) # Compact heatmap
         
         info_layout.addLayout(text_layout)
         info_layout.addWidget(self.exercise_heatmap)
+        info_layout.setStretch(0, 1) # Text gets 1 part space
+        info_layout.setStretch(1, 1) # Heatmap gets 1 part space
         layout.addLayout(info_layout)
 
         # --- LOGGING AREA ---
@@ -271,7 +286,8 @@ class ActiveTrackerWidget(QWidget):
 
     def _skip_rest(self):
         self.rest_seconds = 0
-        self.workout_seconds = 0 # ZERO OUT THE SET TIMER
+        self.rest_container.hide()
+        self.log_group.setEnabled(True)
         self.rest_container.hide()
         self.log_group.setEnabled(True)
         self.lbl_timer.setText("00:00")
@@ -284,13 +300,18 @@ class ActiveTrackerWidget(QWidget):
             if widget: widget.setParent(None)
 
         if not current_ex:
-            self.lbl_exercise_name.setText("Workout Complete!")
+            self.lbl_progress.setText("WORKOUT COMPLETE")
             self.lbl_loadout.setText("")
             self.lbl_set_tracker.setText("-")
             self.btn_log.setEnabled(False)
             self.btn_play_pause.setEnabled(False)
             self.exercise_heatmap.update_heatmap({}) 
             return
+
+        # Update Progress Text dynamically
+        total_ex = len(self.controller.exercises)
+        current_idx = self.controller.current_exercise_index + 1
+        self.lbl_progress.setText(f"EXERCISE {current_idx} OF {total_ex}")
 
         self.lbl_exercise_name.setText(current_ex['name'])
         self.lbl_set_tracker.setText(f"Set {self.controller.current_set} of {current_ex['target_sets']}  |  Target: {current_ex['target_reps_min']} - {current_ex['target_reps_max']} Reps")
