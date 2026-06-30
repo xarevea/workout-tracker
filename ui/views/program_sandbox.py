@@ -14,11 +14,12 @@ from ui.views.base_view import BaseView
 class ProgramSandboxView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
-
+        self.all_exercises = []
         self.neglected_muscles = []
+        self.show_balance_suggestions = False
+
+        layout = QHBoxLayout(self)
         
-        # QSplitter allows dynamic resizing of the 3 columns
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         
         self._setup_left_panel()
@@ -32,26 +33,37 @@ class ProgramSandboxView(BaseView):
         
         self._load_exercise_bank()
 
+    def refresh_data(self):
+        """
+        Triggered by MainWindow._switch_view().
+        Ensures the exercise bank is completely up to date with the database.
+        """
+        current_search = self.search_bar.text()
+        self._load_exercise_bank()
+        if current_search:
+            self._filter_bank(current_search)
+        self._trigger_live_feedback()
+    
     def _setup_left_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        
-        title = QLabel("<b>Live Muscular Feedback</b>")
-        title.setStyleSheet("font-size: 16px;")
-        layout.addWidget(title)
+
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("<b>Analysis View:</b>"))
+        self.combo_analysis_view = QComboBox()
+        self.combo_analysis_view.addItems(["Overall Program"])
+        self.combo_analysis_view.currentTextChanged.connect(self._trigger_live_feedback)
+        header_layout.addWidget(self.combo_analysis_view)
+        layout.addLayout(header_layout)
         
         self.heatmap = AnatomicalHeatmap()
+        self.heatmap.regionClicked.connect(self._on_heatmap_clicked)
         layout.addWidget(self.heatmap, stretch=1)
         
-        # The Smart Assistant (Replaces clicking the SVG)
         self.lbl_assistant = QLabel("<b>Assistant:</b> Add exercises to see feedback.")
         self.lbl_assistant.setWordWrap(True)
         self.lbl_assistant.setStyleSheet("color: #2196F3; padding: 10px; background: #1E1E1E; border-radius: 5px;")
         layout.addWidget(self.lbl_assistant)
-        
-        self.btn_auto_balance = QPushButton("✨ Auto-Suggest Missing")
-        self.btn_auto_balance.setEnabled(False) # Enable once we build the suggestion engine
-        layout.addWidget(self.btn_auto_balance)
         
         self.splitter.addWidget(panel)
 
@@ -60,19 +72,25 @@ class ProgramSandboxView(BaseView):
         layout = QVBoxLayout(panel)
         layout.addWidget(QLabel("<b>Exercise Bank</b>"))
         
-        # 1. Bodypart Filter
+        # Bodypart Filter
         self.combo_bodypart = QComboBox()
         self.combo_bodypart.addItems(["All Muscles"] + list(MuscleMapper.REGION_MAP.keys()))
         self.combo_bodypart.currentTextChanged.connect(self._refresh_bank_display)
         layout.addWidget(self.combo_bodypart)
         
-        # 2. Text Search
+        # Text Search
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Search exercises...")
         self.search_bar.textChanged.connect(self._refresh_bank_display)
         layout.addWidget(self.search_bar)
+
+        # Exercise Suggestions
+        self.btn_toggle_balance = QPushButton("🧠 Show Balancing Suggestions")
+        self.btn_toggle_balance.setCheckable(True)
+        self.btn_toggle_balance.toggled.connect(self._toggle_balance_suggestions)
+        layout.addWidget(self.btn_toggle_balance)
         
-        # 3. Exercise List
+        # Exercise List
         self.exercise_list = QListWidget()
         self.exercise_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.exercise_list.itemDoubleClicked.connect(self._add_to_pool)
@@ -94,6 +112,9 @@ class ProgramSandboxView(BaseView):
         self.combo_template = QComboBox()
         self.combo_template.addItems(["Custom", "Push/Pull/Legs", "Upper/Lower"])
         header_layout.addWidget(self.combo_template)
+        # self.btn_auto_split = QPushButton("⚡ Auto-Assign Days (PPL)")
+        # self.btn_auto_split.clicked.connect(self._auto_assign_split)
+        # header_layout.addWidget(self.btn_auto_split)
         layout.addLayout(header_layout)
         
         # The interactive pool table
@@ -116,13 +137,43 @@ class ProgramSandboxView(BaseView):
         
         self.splitter.addWidget(panel)
 
-    # --- LOGIC & CONNECTIONS ---
-
     def _load_exercise_bank(self):
         self.all_exercises = WorkoutDatabaseManager.get_all_exercises()
         self.exercise_list.clear()
         for ex in self.all_exercises:
             self.exercise_list.addItem(ex['name'])
+
+    def _on_heatmap_clicked(self, muscle_name: str, region_name: str):
+        if self.combo_bodypart.findText(region_name) != -1:
+            self.combo_bodypart.setCurrentText(region_name)
+
+    def _toggle_balance_suggestions(self, checked):
+        self.show_balance_suggestions = checked
+        if checked:
+            self.btn_toggle_balance.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        else:
+            self.btn_toggle_balance.setStyleSheet("")
+        self._refresh_bank_display()
+
+    def _auto_assign_split(self):
+        for row in range(self.pool_table.rowCount()):
+            name = self.pool_table.item(row, 0).text()
+            ex = next((e for e in self.all_exercises if e['name'] == name), None)
+            if not ex: continue
+            
+            primary = ex['primary_muscle'].lower() if ex['primary_muscle'] else ''
+            combo = self.pool_table.cellWidget(row, 2)
+            
+            if primary in ['chest', 'shoulders', 'triceps']:
+                combo.setCurrentText('Day 1')
+            elif primary in ['latissimus', 'upper-back', 'biceps']:
+                combo.setCurrentText('Day 2')
+            elif primary in ['quadriceps', 'hamstrings', 'glutes', 'calves']:
+                combo.setCurrentText('Day 3')
+            else:
+                combo.setCurrentText('Day 4')
+                
+        self._trigger_live_feedback()
 
     def _filter_bank(self, text):
         for i in range(self.exercise_list.count()):
@@ -165,55 +216,7 @@ class ProgramSandboxView(BaseView):
 
     def _remove_from_pool(self, row):
         self.pool_table.removeRow(row)
-        self._trigger_live_feedback() # This will put the item back into the bank
-
-    def _trigger_live_feedback(self):
-        exercises_data = []
-        day_volumes = {}
-        
-        for row in range(self.pool_table.rowCount()):
-            if not self.pool_table.item(row, 0): continue
-            
-            name = self.pool_table.item(row, 0).text()
-            sets = self.pool_table.cellWidget(row, 1).value()
-            day = self.pool_table.cellWidget(row, 2).currentText()
-            
-            exercises_data.append({'name': name, 'sets': sets})
-            if day != "Unassigned":
-                day_volumes[day] = day_volumes.get(day, 0) + sets
-
-        # 1. Update Heatmap
-        volume_map = WorkoutDatabaseManager.calculate_muscle_volume(exercises_data)
-        self.heatmap.update_heatmap(volume_map)
-        
-        # 2. Check Daily Fatigue
-        overloaded_days = [d for d, s in day_volumes.items() if s > 20]
-        if overloaded_days:
-            self.lbl_fatigue.setText(f"⚠️ High Fatigue: {', '.join(overloaded_days)} exceed 20 sets.")
-            self.lbl_fatigue.setStyleSheet("color: #F44336; font-weight: bold;")
-        else:
-            self.lbl_fatigue.setText("Daily Volume: Optimal")
-            self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
-            
-        # 3. Update the Smart Assistant
-        core_muscles = ["chest", "latissimus", "shoulders", "quadriceps", "hamstrings", "core"]
-        
-        if not exercises_data:
-            self.lbl_assistant.setText("<b>Assistant:</b> Add exercises to the pool to see feedback.")
-            self.lbl_assistant.setStyleSheet("color: #2196F3; padding: 10px; background: #1E1E1E; border-radius: 5px;")
-            self.neglected_muscles = []
-        else:
-            self.neglected_muscles = [m for m in core_muscles if volume_map.get(m, 0) < 3]
-            if self.neglected_muscles:
-                formatted = [m.title() for m in self.neglected_muscles]
-                self.lbl_assistant.setText(f"<b>Assistant:</b> You are neglecting: {', '.join(formatted)}. See suggestions at the top of the bank!")
-                self.lbl_assistant.setStyleSheet("color: #FF9800; padding: 10px; background: #2A1F11; border-radius: 5px; border: 1px solid #FF9800;")
-            else:
-                self.lbl_assistant.setText("<b>Assistant:</b> Your program looks well-balanced! Excellent coverage.")
-                self.lbl_assistant.setStyleSheet("color: #4CAF50; padding: 10px; background: #112A18; border-radius: 5px; border: 1px solid #4CAF50;")
-                
-        # 4. Trigger bank refresh to apply the new neglect filters and sort to top
-        self._refresh_bank_display()
+        self._trigger_live_feedback() # This puts item back into the bank
 
     def _refresh_bank_display(self, *args):
         search_text = self.search_bar.text().lower()
@@ -247,7 +250,7 @@ class ProgramSandboxView(BaseView):
                     continue
                     
             # Sort into 'Suggested' vs 'Regular' based on heatmap analysis
-            if hasattr(self, 'neglected_muscles') and primary in self.neglected_muscles:
+            if self.show_balance_suggestions and primary in self.neglected_muscles:
                 suggested_items.append(name)
             else:
                 regular_items.append(name)
@@ -279,18 +282,66 @@ class ProgramSandboxView(BaseView):
             item.setData(Qt.ItemDataRole.UserRole, name)
             self.exercise_list.addItem(item)
 
-    def refresh_data(self):
-        """
-        Triggered by MainWindow._switch_view().
-        Ensures the exercise bank is completely up to date with the database.
-        """
-        # Save the current search text so we don't clear their search when navigating away and back
-        current_search = self.search_bar.text()
+    def _trigger_live_feedback(self):
+        active_view = self.combo_analysis_view.currentText()
+        exercises_data = []
+        day_volumes = {}
+        active_days = set()
         
-        # Reload the raw data
-        self._load_exercise_bank()
+        for row in range(self.pool_table.rowCount()):
+            if not self.pool_table.item(row, 0): continue
+            
+            name = self.pool_table.item(row, 0).text()
+            sets = self.pool_table.cellWidget(row, 1).value()
+            day = self.pool_table.cellWidget(row, 2).currentText()
+            
+            if day != "Unassigned":
+                active_days.add(day)
+                day_volumes[day] = day_volumes.get(day, 0) + sets
+
+            if active_view == "Overall Program" or active_view == day:
+                exercises_data.append({'name': name, 'sets': sets})
+
+        current_options = [self.combo_analysis_view.itemText(i) for i in range(self.combo_analysis_view.count())]
+        needed_options = ["Overall Program"] + sorted(list(active_days))
+        if current_options != needed_options:
+            self.combo_analysis_view.blockSignals(True)
+            self.combo_analysis_view.clear()
+            self.combo_analysis_view.addItems(needed_options)
+            if active_view in needed_options:
+                self.combo_analysis_view.setCurrentText(active_view)
+            self.combo_analysis_view.blockSignals(False)
+
+        # 1. Update Heatmap
+        volume_map = WorkoutDatabaseManager.calculate_muscle_volume(exercises_data)
+        self.heatmap.update_heatmap(volume_map)
         
-        # Re-apply the search filter
-        if current_search:
-            self._filter_bank(current_search)
-        self._trigger_live_feedback()
+        # 2. Check Daily Fatigue
+        overloaded_days = [d for d, s in day_volumes.items() if s > 20]
+        if overloaded_days:
+            self.lbl_fatigue.setText(f"⚠️ High Fatigue: {', '.join(overloaded_days)} exceed 20 sets.")
+            self.lbl_fatigue.setStyleSheet("color: #F44336; font-weight: bold;")
+        else:
+            self.lbl_fatigue.setText("Daily Volume: Optimal")
+            self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            
+        # 3. Update the Smart Assistant
+        if active_view == "Overall Program":
+            core_muscles = ["chest", "latissimus", "shoulders", "quadriceps", "hamstrings", "core"]
+            self.neglected_muscles = [m for m in core_muscles if volume_map.get(m, 0) < 3]
+
+            if not exercises_data:
+                self.lbl_assistant.setText("<b>Assistant:</b> Add exercises to the pool to see feedback.")
+                self.lbl_assistant.setStyleSheet("color: #2196F3;")
+            elif self.neglected_muscles:
+                self.lbl_assistant.setText(f"<b>Assistant:</b> Neglected areas: {', '.join([m.title() for m in self.neglected_muscles])}.")
+                self.lbl_assistant.setStyleSheet("color: #FF9800;")
+            else:
+                self.lbl_assistant.setText("<b>Assistant:</b> Well balanced!")
+                self.lbl_assistant.setStyleSheet("color: #4CAF50;")
+        else:
+            self.lbl_assistant.setText(f"<b>{active_view} Stats:</b> {day_volumes.get(active_view, 0)} Total Sets.")
+            self.lbl_assistant.setStyleSheet("color: #2196F3;")
+
+        # 4. Trigger bank refresh to apply the new neglect filters and sort to top
+        self._refresh_bank_display()
