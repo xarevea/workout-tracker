@@ -1,18 +1,22 @@
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, 
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
-    QComboBox, QSpinBox, QSplitter, QListWidget, QAbstractItemView
+    QComboBox, QSpinBox, QSplitter, QListWidget, QAbstractItemView,
+    QListWidgetItem
 )
+from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt
 
 from core.db_operations import WorkoutDatabaseManager
-from ui.components.body_heatmap import AnatomicalHeatmap
+from ui.components.body_heatmap import AnatomicalHeatmap, MuscleMapper
 from ui.views.base_view import BaseView
 
 class ProgramSandboxView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
+
+        self.neglected_muscles = []
         
         # QSplitter allows dynamic resizing of the 3 columns
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -54,14 +58,21 @@ class ProgramSandboxView(BaseView):
     def _setup_middle_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        
         layout.addWidget(QLabel("<b>Exercise Bank</b>"))
         
+        # 1. Bodypart Filter
+        self.combo_bodypart = QComboBox()
+        self.combo_bodypart.addItems(["All Muscles"] + list(MuscleMapper.REGION_MAP.keys()))
+        self.combo_bodypart.currentTextChanged.connect(self._refresh_bank_display)
+        layout.addWidget(self.combo_bodypart)
+        
+        # 2. Text Search
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Search exercises...")
-        self.search_bar.textChanged.connect(self._filter_bank)
+        self.search_bar.textChanged.connect(self._refresh_bank_display)
         layout.addWidget(self.search_bar)
         
+        # 3. Exercise List
         self.exercise_list = QListWidget()
         self.exercise_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.exercise_list.itemDoubleClicked.connect(self._add_to_pool)
@@ -121,39 +132,42 @@ class ProgramSandboxView(BaseView):
     def _add_to_pool(self):
         selected = self.exercise_list.selectedItems()
         for item in selected:
+            if item.flags() == Qt.ItemFlag.NoItemFlags:
+                continue # Skip headers
+                
+            raw_name = item.data(Qt.ItemDataRole.UserRole)
+            if not raw_name: 
+                raw_name = item.text()
+                
             row = self.pool_table.rowCount()
             self.pool_table.insertRow(row)
             
-            # 1. Name
-            self.pool_table.setItem(row, 0, QTableWidgetItem(item.text()))
+            self.pool_table.setItem(row, 0, QTableWidgetItem(raw_name))
             
-            # 2. Sets (SpinBox attached to live feedback)
             spin_sets = QSpinBox()
             spin_sets.setRange(1, 10)
-            spin_sets.setValue(3) # Default assumption
+            spin_sets.setValue(3)
             spin_sets.valueChanged.connect(self._trigger_live_feedback)
             self.pool_table.setCellWidget(row, 1, spin_sets)
             
-            # 3. Day Assignment
             combo_day = QComboBox()
             combo_day.addItems(["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"])
             combo_day.currentTextChanged.connect(self._trigger_live_feedback)
             self.pool_table.setCellWidget(row, 2, combo_day)
             
-            # 4. Remove Button
             btn_remove = QPushButton("X")
             btn_remove.setStyleSheet("color: #F44336;")
             btn_remove.clicked.connect(lambda _, r=row: self._remove_from_pool(r))
             self.pool_table.setCellWidget(row, 3, btn_remove)
             
+        # Calling feedback will automatically hide the newly added item from the bank
         self._trigger_live_feedback()
 
     def _remove_from_pool(self, row):
         self.pool_table.removeRow(row)
-        self._trigger_live_feedback()
+        self._trigger_live_feedback() # This will put the item back into the bank
 
     def _trigger_live_feedback(self):
-        """ The heart of the Sandbox. Reads the UI state and updates visuals. """
         exercises_data = []
         day_volumes = {}
         
@@ -165,11 +179,10 @@ class ProgramSandboxView(BaseView):
             day = self.pool_table.cellWidget(row, 2).currentText()
             
             exercises_data.append({'name': name, 'sets': sets})
-            
             if day != "Unassigned":
                 day_volumes[day] = day_volumes.get(day, 0) + sets
 
-        # 1. Update the Heatmap
+        # 1. Update Heatmap
         volume_map = WorkoutDatabaseManager.calculate_muscle_volume(exercises_data)
         self.heatmap.update_heatmap(volume_map)
         
@@ -182,25 +195,89 @@ class ProgramSandboxView(BaseView):
             self.lbl_fatigue.setText("Daily Volume: Optimal")
             self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
             
-        # 3. UPDATE: The Smart Assistant Logic
-        # Define the foundational muscles needed for a balanced physique
-        core_muscles = ["chest", "lats", "shoulders", "quadriceps", "hamstrings", "core"]
-        
-        # Find which core muscles have less than 3 sets allocated
-        neglected = [m.title() for m in core_muscles if volume_map.get(m, 0) < 3]
+        # 3. Update the Smart Assistant
+        core_muscles = ["chest", "latissimus", "shoulders", "quadriceps", "hamstrings", "core"]
         
         if not exercises_data:
             self.lbl_assistant.setText("<b>Assistant:</b> Add exercises to the pool to see feedback.")
             self.lbl_assistant.setStyleSheet("color: #2196F3; padding: 10px; background: #1E1E1E; border-radius: 5px;")
-            self.btn_auto_balance.setEnabled(False)
-        elif neglected:
-            self.lbl_assistant.setText(f"<b>Assistant:</b> You are neglecting: {', '.join(neglected)}. Consider adding exercises for these areas!")
-            self.lbl_assistant.setStyleSheet("color: #FF9800; padding: 10px; background: #2A1F11; border-radius: 5px; border: 1px solid #FF9800;")
-            self.btn_auto_balance.setEnabled(True)
+            self.neglected_muscles = []
         else:
-            self.lbl_assistant.setText("<b>Assistant:</b> Your program looks well-balanced! Excellent coverage.")
-            self.lbl_assistant.setStyleSheet("color: #4CAF50; padding: 10px; background: #112A18; border-radius: 5px; border: 1px solid #4CAF50;")
-            self.btn_auto_balance.setEnabled(False)
+            self.neglected_muscles = [m for m in core_muscles if volume_map.get(m, 0) < 3]
+            if self.neglected_muscles:
+                formatted = [m.title() for m in self.neglected_muscles]
+                self.lbl_assistant.setText(f"<b>Assistant:</b> You are neglecting: {', '.join(formatted)}. See suggestions at the top of the bank!")
+                self.lbl_assistant.setStyleSheet("color: #FF9800; padding: 10px; background: #2A1F11; border-radius: 5px; border: 1px solid #FF9800;")
+            else:
+                self.lbl_assistant.setText("<b>Assistant:</b> Your program looks well-balanced! Excellent coverage.")
+                self.lbl_assistant.setStyleSheet("color: #4CAF50; padding: 10px; background: #112A18; border-radius: 5px; border: 1px solid #4CAF50;")
+                
+        # 4. Trigger bank refresh to apply the new neglect filters and sort to top
+        self._refresh_bank_display()
+
+    def _refresh_bank_display(self, *args):
+        search_text = self.search_bar.text().lower()
+        selected_bodypart = self.combo_bodypart.currentText().lower()
+        
+        # 1. Get exercises currently in the pool (so we can hide them)
+        pool_exercises = set()
+        for row in range(self.pool_table.rowCount()):
+            if self.pool_table.item(row, 0):
+                pool_exercises.add(self.pool_table.item(row, 0).text())
+                
+        self.exercise_list.clear()
+        regular_items = []
+        suggested_items = []
+        
+        # 2. Filter exercises
+        for ex in self.all_exercises:
+            name = ex['name']
+            primary = ex['primary_muscle'].lower() if ex['primary_muscle'] else ''
+            secondary = ex['secondary_muscles'].lower() if ex['secondary_muscles'] else ''
+            
+            # Hide if already in pool
+            if name in pool_exercises: continue
+            # Hide if it fails text search    
+            if search_text and search_text not in name.lower(): continue
+                
+            # Hide if it fails bodypart combobox
+            if selected_bodypart != "all muscles":
+                targets = MuscleMapper.REGION_MAP.get(selected_bodypart.capitalize(), [selected_bodypart])
+                if not any(t in primary or t in secondary for t in targets):
+                    continue
+                    
+            # Sort into 'Suggested' vs 'Regular' based on heatmap analysis
+            if hasattr(self, 'neglected_muscles') and primary in self.neglected_muscles:
+                suggested_items.append(name)
+            else:
+                regular_items.append(name)
+                
+        # 3. Populate QListWidget with formatting
+        if suggested_items:
+            # Create a non-selectable divider
+            header = QListWidgetItem("✨ RECOMMENDED TO BALANCE ✨")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setBackground(QColor("#2A1F11"))
+            header.setForeground(QColor("#FF9800"))
+            self.exercise_list.addItem(header)
+            
+            for name in sorted(suggested_items):
+                item = QListWidgetItem(f"⭐ {name}")
+                item.setForeground(QColor("#FF9800"))
+                # Save the real name in UserRole data so the program reads "Pull-ups" not "⭐ Pull-ups"
+                item.setData(Qt.ItemDataRole.UserRole, name) 
+                self.exercise_list.addItem(item)
+                
+            sep = QListWidgetItem("-" * 30)
+            sep.setFlags(Qt.ItemFlag.NoItemFlags)
+            sep.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.exercise_list.addItem(sep)
+            
+        for name in sorted(regular_items):
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            self.exercise_list.addItem(item)
 
     def refresh_data(self):
         """

@@ -3,6 +3,45 @@ import random
 from datetime import datetime, timedelta
 from core.database import get_connection
 
+def get_mock_exercises():
+    return [
+        # --- CALISTHENICS & RINGS ---
+        {"name": "Ring Dips", "primary_muscle": "chest", "secondary_muscles": "triceps, shoulders, core"},
+        {"name": "Ring Push-ups", "primary_muscle": "chest", "secondary_muscles": "triceps, shoulders, core"},
+        {"name": "Pull-ups", "primary_muscle": "latissimus", "secondary_muscles": "upper-back, biceps, forearms, core"},
+        {"name": "Chin-ups", "primary_muscle": "latissimus", "secondary_muscles": "biceps, upper-back, core"},
+        {"name": "Ring Muscle-ups", "primary_muscle": "latissimus", "secondary_muscles": "upper-back, chest, triceps, shoulders, core"},
+        {"name": "Front Lever Holds", "primary_muscle": "latissimus", "secondary_muscles": "upper-back, core"},
+        {"name": "Planche Progressions", "primary_muscle": "shoulders", "secondary_muscles": "chest, triceps, core"},
+        {"name": "Wall Handstand Holds", "primary_muscle": "shoulders", "secondary_muscles": "triceps, upper-back, core"},
+        {"name": "Handstand Push-ups", "primary_muscle": "shoulders", "secondary_muscles": "triceps, upper-back, core"},
+        {"name": "Pistol Squats", "primary_muscle": "quadriceps", "secondary_muscles": "glutes, calves, core"},
+        {"name": "Nordic Curls", "primary_muscle": "hamstrings", "secondary_muscles": "glutes, calves"},
+        {"name": "L-Sit", "primary_muscle": "core", "secondary_muscles": "triceps, shoulders, quadriceps"},
+        {"name": "Human Flag", "primary_muscle": "core", "secondary_muscles": "latissimus, shoulders, obliques"},
+        
+        # --- POWER RACK / BARBELL ---
+        {"name": "Barbell Back Squats", "primary_muscle": "quadriceps", "secondary_muscles": "glutes, hamstrings, lower-back, core"},
+        {"name": "Barbell Front Squats", "primary_muscle": "quadriceps", "secondary_muscles": "glutes, lower-back, core"},
+        {"name": "Barbell Bench Press", "primary_muscle": "chest", "secondary_muscles": "triceps, shoulders"},
+        {"name": "Incline Bench Press", "primary_muscle": "chest", "secondary_muscles": "shoulders, triceps"},
+        {"name": "Barbell Overhead Press", "primary_muscle": "shoulders", "secondary_muscles": "triceps, core, upper-back"},
+        {"name": "Barbell Deadlift", "primary_muscle": "glutes", "secondary_muscles": "hamstrings, lower-back, quadriceps, upper-back"},
+        {"name": "Romanian Deadlift (RDL)", "primary_muscle": "hamstrings", "secondary_muscles": "glutes, lower-back"},
+        {"name": "Barbell Rows", "primary_muscle": "upper-back", "secondary_muscles": "latissimus, biceps, lower-back"},
+        {"name": "Good Mornings", "primary_muscle": "hamstrings", "secondary_muscles": "glutes, lower-back"},
+        
+        # --- DUMBBELL / ACCESSORY ---
+        {"name": "Dumbbell Bicep Curls", "primary_muscle": "biceps", "secondary_muscles": "forearms"},
+        {"name": "Hammer Curls", "primary_muscle": "biceps", "secondary_muscles": "forearms"},
+        {"name": "Overhead Tricep Extensions", "primary_muscle": "triceps", "secondary_muscles": ""},
+        {"name": "Tricep Pushdowns", "primary_muscle": "triceps", "secondary_muscles": ""},
+        {"name": "Lateral Raises", "primary_muscle": "shoulders", "secondary_muscles": ""},
+        {"name": "Calf Raises", "primary_muscle": "calves", "secondary_muscles": ""},
+        {"name": "Hanging Leg Raises", "primary_muscle": "core", "secondary_muscles": "forearms, quadriceps"},
+        {"name": "Farmer's Walk", "primary_muscle": "forearms", "secondary_muscles": "core, upper-back, calves"}
+    ]
+
 def generate_test_data():
     conn = get_connection()
     cursor = conn.cursor()

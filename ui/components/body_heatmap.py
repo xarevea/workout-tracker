@@ -1,9 +1,11 @@
 import json
 import os
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy, 
+)
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtGui import QPainter
-from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtCore import Qt, QPointF, QRectF
 
 class AspectRatioSvgWidget(QWidget):
     """
@@ -18,9 +20,18 @@ class AspectRatioSvgWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(50, 100)
 
+        self._click_map = {}
+
     def load(self, byte_array):
         self.svg_renderer.load(byte_array)
-        self.update() # Trigger a repaint
+        self.update()
+
+        # update event handler based on available elements
+        self._click_map.clear()
+        for region, slugs in MuscleMapper.REGION_MAP.items():
+            for element_id in slugs:
+                if self.svg_renderer.elementExists(element_id):
+                    self._click_map[element_id] = region
 
     def paintEvent(self, event):
         if not self.svg_renderer.isValid():
@@ -53,6 +64,28 @@ class AspectRatioSvgWidget(QWidget):
         draw_rect = QRectF(x, y, draw_width, draw_height)
         self.svg_renderer.render(painter, draw_rect)
 
+    def mousePressEvent(self, event):
+        """Detect if a click happened inside an SVG element."""
+        pos = event.position()
+
+        view_box = self.svg_renderer.viewBoxF()
+        scale_x = view_box.width() / self.width()
+        scale_y = view_box.height() / self.height()
+
+        svg_point = QPointF(pos.x() * scale_x, pos.y() * scale_y)
+
+        for element_id in self._click_map:
+            element_bounds: QRectF = self.svg_renderer.boundsOnElement(element_id)
+            if element_bounds.isValid() and element_bounds.contains(svg_point):
+                self._on_element_clicked(self._click_map[element_id])
+                # return
+
+        super().mousePressEvent(event)
+
+    def _on_element_clicked(self, element_id):
+        """Trigger specific methods based on which element was clicked."""
+        print(f"Element {element_id} was clicked!")
+        # TODO: emit event 
 
 class MuscleMapper:
     """Utility class mapping high-level logical groups to specific SVG muscle slugs."""
