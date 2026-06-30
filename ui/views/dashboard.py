@@ -11,8 +11,9 @@ import numpy as np
 
 from core.db_operations import WorkoutDatabaseManager
 from ui.components.body_heatmap import AnatomicalHeatmap
+from ui.views.base_view import BaseView
 
-class DashboardView(QWidget):
+class DashboardView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)

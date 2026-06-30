@@ -5,8 +5,9 @@ from PyQt6.QtWidgets import (
     QCalendarWidget, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView
 )
 from core.db_operations import WorkoutDatabaseManager
+from ui.views.base_view import BaseView
 
-class BodyweightHubView(QWidget):
+class BodyweightHubView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)

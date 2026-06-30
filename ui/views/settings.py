@@ -4,8 +4,9 @@ from PyQt6.QtWidgets import (
     QMessageBox, QListWidget, QAbstractItemView, QTabWidget, QSpinBox, QDoubleSpinBox
 )
 from core.database import get_connection
+from ui.views.base_view import BaseView
 
-class SettingsView(QWidget):
+class SettingsView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)

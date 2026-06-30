@@ -68,10 +68,18 @@ class MuscleMapper:
     
     @staticmethod
     def get_color(sets: float) -> str:
-        if sets == 0: return '#333333'      
-        elif sets < 8: return '#2196F3'     
-        elif sets <= 20: return '#4CAF50'   
-        else: return '#F44336'              
+        # Grey: Untrained (0 sets)
+        if sets == 0: 
+            return '#333333'      
+        # Blue: Under-trained (1-9 sets)
+        elif sets < 10: 
+            return '#2196F3'
+        # Green: Optimal Volume (10-20 sets)
+        elif sets <= 20: 
+            return '#4CAF50'
+        # Red: Over-trained / Junk Volume Warning (20+ sets)
+        else: 
+            return '#F44336'         
 
 class AnatomicalHeatmap(QWidget):
     def __init__(self, parent=None, data_path='male_model_data.json'):

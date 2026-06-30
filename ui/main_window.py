@@ -13,12 +13,13 @@ from ui.views.dashboard import DashboardView
 from ui.views.routine_builder import RoutineBuilderView
 from ui.views.settings import SettingsView
 from ui.views.bodyweight_hub import BodyweightHubView
-from ui.views.program_builder import ProgramBuilderView
+from ui.views.program_sandbox import ProgramSandboxView
 from utils.gui_utils import add_button_above_stretch, create_sidebar_button
 
 class WorkoutContainer(QWidget):
     def __init__(self, minimap, active_tracker, parent=None):
         super().__init__(parent)
+        
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
@@ -127,22 +128,17 @@ class MainWindow(QMainWindow):
         )
 
         self.workout_container = WorkoutContainer(self.minimap, self.active_tracker)
-        
-        # workout_layout.addWidget(self.minimap, stretch=1)
-        # workout_layout.addWidget(self.active_tracker, stretch=3)
         self._add_stacked_widget(self.workout_container, "Active Workout")
 
-        # 3. Routine Builder
-        self.routine_view = RoutineBuilderView()
-        self._add_stacked_widget(self.routine_view, "Routine Builder")
-
-        self.program_view = ProgramBuilderView()
-        self._add_stacked_widget(self.program_view, "Program Builder")
+        # 3. Unified Program Sandbox (Replaces Routine & Program Builders)
+        self.program_sandbox_view = ProgramSandboxView()
+        self._add_stacked_widget(self.program_sandbox_view, "Program Sandbox")
         
+        # 4. Bodyweight Hub
         self.bodyweight_view = BodyweightHubView()
         self._add_stacked_widget(self.bodyweight_view, "Bodyweight Hub")
         
-        # 4. Settings
+        # 5. Settings
         self.settings_view = SettingsView()
         self._add_stacked_widget(self.settings_view, "Settings")
         

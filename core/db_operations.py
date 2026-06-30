@@ -302,3 +302,42 @@ class WorkoutDatabaseManager:
                 for sec in [s.strip() for s in row['secondary_muscles'].split(',')]:
                     volume_map[sec] = volume_map.get(sec, 0) + (vol * 0.5)
         return volume_map
+
+    @staticmethod
+    def calculate_muscle_volume(exercises_data: list) -> dict:
+        """
+        Takes a list: [{'name': 'Bench Press', 'sets': 3}, ...] 
+        Returns a mapped volume dictionary: {'Chest': 3, 'Triceps': 1.5, ...}
+        """
+        if not exercises_data:
+            return {}
+            
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        volume_map = {}
+        
+        for ex in exercises_data:
+            name = ex.get('name')
+            sets = ex.get('sets', 0)
+            
+            # Fetch muscle mappings for this exercise
+            cursor.execute("SELECT primary_muscle, secondary_muscles FROM exercises WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            
+            if row:
+                primary = row['primary_muscle']
+                if primary:
+                    # Primary muscle gets 100% of the set volume
+                    volume_map[primary] = volume_map.get(primary, 0) + sets
+                
+                secondary_str = row['secondary_muscles']
+                if secondary_str:
+                    # Parse comma-separated secondary muscles
+                    secondaries = [s.strip() for s in secondary_str.split(',') if s.strip()]
+                    for sec in secondaries:
+                        # Architectural Choice: Secondary muscles get 50% credit per set
+                        volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
+                        
+        conn.close()
+        return volume_map
