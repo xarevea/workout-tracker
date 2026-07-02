@@ -1,19 +1,70 @@
 # modules/workout/session.py
 import time
 from typing import Dict, Optional
+from PyQt6.QtCore import QRunnable, QThreadPool, pyqtSlot
+
 from core.db_operations import WorkoutDatabaseManager
 from modules.integrations.fitbit_client import FitbitClient
 from core.database import get_connection
+from core.events import event_bus
+
+class FitbitSyncWorker(QRunnable):
+    """Handles network requests in the background so the GUI doesn't freeze."""
+    def __init__(self, workout_id, duration):
+        super().__init__()
+        self.workout_id = workout_id
+        self.duration = duration
+        self.client = FitbitClient()
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            # Attempt to sync with health provider
+            metrics = self.client.get_workout_metrics(self.duration)
+            if metrics:
+                # Tell the UI the sync was successful
+                event_bus.emit('FITBIT_SYNC_SUCCESS', {'id': self.workout_id, 'metrics': metrics})
+            else:
+                event_bus.emit('FITBIT_SYNC_FAILED', "No metrics returned.")
+        except Exception as e:
+            event_bus.emit('FITBIT_SYNC_FAILED', str(e))
 
 class WorkoutSessionController:
     def __init__(self):
         self.workout_id = None
+        self.current_user_id = 1
         self.start_time: Optional[float] = None
         self.is_active: bool = False
         self.exercises = []
         self.current_exercise_index = 0
         self.current_set = 1
         self.session_logs = []
+
+        event_bus.subscribe('USER_CHANGED', self._update_active_user)
+
+    def _update_active_user(self, user_id: int):
+        """Keeps the session controller aware of the active user."""
+        self.current_user_id = user_id
+
+    def undo_last_set(self) -> bool:
+        """TASK 1: Pops the last log and safely rewinds the session state."""
+        if not self.session_logs:
+            return False # Nothing to undo
+            
+        last_log = self.session_logs.pop()
+        
+        # Step back the set counter
+        if self.current_set > 1:
+            self.current_set -= 1
+        else:
+            # If we were on set 1, we need to revert to the previous exercise entirely
+            if self.current_exercise_index > 0:
+                self.current_exercise_index -= 1
+                prev_ex_name = self.exercises[self.current_exercise_index]['name']
+                # Count how many logs belong to the previous exercise to set the proper set number
+                prev_logs = [log for log in self.session_logs if log['exercise'] == prev_ex_name]
+                self.current_set = len(prev_logs) + 1
+        return True
 
     def load_template(self, template_id: int):
         self.exercises = WorkoutDatabaseManager.get_routine_exercises(template_id)

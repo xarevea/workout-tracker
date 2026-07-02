@@ -1,19 +1,21 @@
 # ui/main_window.py
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
-    QPushButton, QStackedWidget, QLabel
+    QPushButton, QStackedWidget, QLabel, QSystemTrayIcon, QMenu,
+    QComboBox,
 )
+from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import Qt
 
-from ui.components.minimap import WorkoutMinimap
-from ui.components.active_tracker import ActiveTrackerWidget
+from core.events import event_bus
 from modules.workout.session import WorkoutSessionController
-
+from ui.components.active_tracker import ActiveTrackerWidget
+from ui.components.minimap import WorkoutMinimap
+from ui.views.bodyweight_hub import BodyweightHubView
 from ui.views.dashboard import DashboardView
+from ui.views.program_sandbox import ProgramSandboxView
 from ui.views.routine_builder import RoutineBuilderView
 from ui.views.settings import SettingsView
-from ui.views.bodyweight_hub import BodyweightHubView
-from ui.views.program_sandbox import ProgramSandboxView
 from utils.gui_utils import add_button_above_stretch, create_sidebar_button
 
 class WorkoutContainer(QWidget):
@@ -40,7 +42,26 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Hybrid Tracker")
         self.resize(1100, 750)
+
+        # Minimize to System Tray
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
         
+        tray_menu = QMenu()
+        restore_action = QAction("Restore", self)
+        restore_action.triggered.connect(self.showNormal)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self._force_quit)
+        
+        tray_menu.addAction(restore_action)
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+        
+        self._is_force_quit = False
+        
+        # Main widget
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QHBoxLayout(self.central_widget)
@@ -51,22 +72,113 @@ class MainWindow(QMainWindow):
         self._setup_global_header()
         self._setup_ui()
 
+        self._initialize_context()
+
+    def _force_quit(self):
+        self._is_force_quit = True
+        self.close()
+
+    def closeEvent(self, event):
+        """Intercept the X button to minimize to tray instead."""
+        if not self._is_force_quit:
+            event.ignore()
+            self.hide()
+            self.tray_icon.showMessage(
+                "Workout Active",
+                "App minimized to tray. Your rest timers are still running.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000
+            )
+        else:
+            super().closeEvent(event)
+
     def _setup_global_header(self):
         self.header_widget = QWidget()
-        self.header_widget.setStyleSheet("background-color: #1e1e1e; border-bottom: 2px solid #333;")
+        self.header_widget.setStyleSheet("background-color: #2c2c2c; border-bottom: 1px solid #3d3d3d;")
         header_layout = QHBoxLayout(self.header_widget)
-        header_layout.setContentsMargins(20, 10, 20, 10)
+        header_layout.setContentsMargins(15, 10, 15, 10)
+
+        # --- User & Program Context Switchers ---
+        switcher_layout = QHBoxLayout()
+        switcher_layout.setSpacing(10)
         
-        title = QLabel("🦾 Terminal Calisthenics & Strength")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #E0E0E0;")
+        lbl_user = QLabel("👤 User:")
+        lbl_user.setStyleSheet("color: #b0b0b0; font-weight: bold;")
+        self.user_combo = QComboBox()
+        self.user_combo.setStyleSheet("padding: 5px; border-radius: 4px; background: #1e1e1e; color: white;")
+        self.user_combo.currentIndexChanged.connect(self._on_user_changed)
         
-        # This is the global timer!
+        lbl_program = QLabel("📋 Program:")
+        lbl_program.setStyleSheet("color: #b0b0b0; font-weight: bold;")
+        self.program_combo = QComboBox()
+        self.program_combo.setStyleSheet("padding: 5px; border-radius: 4px; background: #1e1e1e; color: white;")
+        self.program_combo.currentIndexChanged.connect(self._on_program_changed)
+        
+        switcher_layout.addWidget(lbl_user)
+        switcher_layout.addWidget(self.user_combo)
+        switcher_layout.addWidget(lbl_program)
+        switcher_layout.addWidget(self.program_combo)
+        
+        header_layout.addLayout(switcher_layout)
+        header_layout.addStretch() # Pushes the timer to the right
+
         self.lbl_global_timer = QLabel("No Active Session")
-        self.lbl_global_timer.setStyleSheet("font-size: 18px; font-weight: bold; color: #888;")
-        
-        header_layout.addWidget(title)
-        header_layout.addStretch()
+        self.lbl_global_timer.setStyleSheet("font-size: 14px; font-weight: bold; color: #b0b0b0;")
         header_layout.addWidget(self.lbl_global_timer)
+
+    def _initialize_context(self):
+        """Loads users and their programs into the header dropdowns."""
+        self.user_combo.blockSignals(True)
+        self.user_combo.clear()
+        
+        from core.db_operations import WorkoutDatabaseManager
+        users = WorkoutDatabaseManager.get_all_users()
+        
+        for u in users:
+            self.user_combo.addItem(u['username'], u['id'])
+            
+        self.user_combo.blockSignals(False)
+        
+        if self.user_combo.count() > 0:
+            self._on_user_changed(0) 
+            
+    def _on_user_changed(self, index):
+        user_id = self.user_combo.itemData(index)
+        if not user_id: return
+        
+        # Tell the rest of the app the active user changed (Dashboard can listen to this!)
+        event_bus.emit('USER_CHANGED', user_id)
+        
+        self.program_combo.blockSignals(True)
+        self.program_combo.clear()
+        
+        from core.db_operations import WorkoutDatabaseManager
+        programs = WorkoutDatabaseManager.get_programs_for_user(user_id)
+        
+        active_idx = 0
+        for i, p in enumerate(programs):
+            self.program_combo.addItem(p['name'], p['id'])
+            if p['is_active']:
+                active_idx = i
+                
+        if programs:
+            self.program_combo.setCurrentIndex(active_idx)
+            
+        self.program_combo.blockSignals(False)
+        
+        if self.program_combo.count() > 0:
+            self._on_program_changed(self.program_combo.currentIndex())
+            
+    def _on_program_changed(self, index):
+        user_id = self.user_combo.currentData()
+        program_id = self.program_combo.itemData(index)
+        if not program_id or not user_id: return
+        
+        from core.db_operations import WorkoutDatabaseManager
+        WorkoutDatabaseManager.set_active_program(user_id, program_id)
+        
+        # Tell the rest of the app the active program changed
+        event_bus.emit('PROGRAM_CHANGED', program_id)
 
     def _setup_ui(self):
         main_widget = QWidget()

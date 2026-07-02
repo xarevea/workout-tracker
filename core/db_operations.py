@@ -1,4 +1,7 @@
-from core.database import get_connection
+from typing import List, Dict, Optional
+import sqlite3
+
+from core.database import get_connection, get_db_connection
 
 class WorkoutDatabaseManager:
     # --- UI DECOUPLED METHODS ---
@@ -341,3 +344,30 @@ class WorkoutDatabaseManager:
                         
         conn.close()
         return volume_map
+
+    @staticmethod
+    def get_all_users() -> List[Dict]:
+        """Fetches all registered users for the context switcher."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, username FROM users ORDER BY id")
+            return [dict(row) for row in cursor.fetchall()]
+
+    @staticmethod
+    def get_programs_for_user(user_id: int) -> List[Dict]:
+        """Fetches all programs belonging to a specific user."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, is_active FROM programs WHERE user_id = ?", (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    @staticmethod
+    def set_active_program(user_id: int, program_id: int):
+        """Sets a specific program as active for the given user, deactivating all others."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE programs SET is_active = 0 WHERE user_id = ?", (user_id,))
+            if program_id is not None:
+                cursor.execute("UPDATE programs SET is_active = 1 WHERE id = ?", (program_id,))
+
+                

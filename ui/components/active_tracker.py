@@ -160,9 +160,15 @@ class ActiveTrackerWidget(QWidget):
         self.lbl_loadout = QLabel("") 
         self.lbl_loadout.setStyleSheet("color: #2196F3; font-weight: bold;")
         self.lbl_set_tracker = QLabel("-")
+
+        # --- EXERCISE CUES SECTION ---
+        self.cues_list = QListWidget()
+        self.cues_list.setStyleSheet("background-color: transparent; border: none; color: #b0b0b0; font-style: italic;")
+        self.cues_list.setMaximumHeight(80)
         
         text_layout.addWidget(self.lbl_progress) # Add progress above the name
         text_layout.addWidget(self.lbl_exercise_name)
+        text_layout.addWidget(self.cues_list)
         text_layout.addWidget(self.lbl_loadout)
         text_layout.addWidget(self.lbl_set_tracker)
         text_layout.addStretch() # Push text to top
@@ -223,9 +229,14 @@ class ActiveTrackerWidget(QWidget):
         self.btn_log.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
         self.btn_log.clicked.connect(self._on_log_set_clicked)
         self.btn_log.setEnabled(False) 
+
+        self.btn_undo = QPushButton("⟲ Undo Set")
+        self.btn_undo.setStyleSheet("background-color: #555555; color: white;")
+        self.btn_undo.clicked.connect(self._handle_undo_set)
         
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_log)
+        btn_layout.addWidget(self.btn_undo)
         btn_layout.addStretch()
         log_layout.addLayout(btn_layout)
         self.log_group.setLayout(log_layout)
@@ -322,7 +333,17 @@ class ActiveTrackerWidget(QWidget):
             self.exercise_heatmap.update_heatmap({}) 
             return
 
-        # Update Progress Text dynamically
+        # Update cues
+        current_ex = self.controller.exercises[self.controller.current_exercise_index]
+        cues_text = current_ex.get('cues', "1. Focus on form\n2. Maintain tension\n3. Full range of motion")
+        if not cues_text:
+             cues_text = "1. Focus on form\n2. Maintain tension\n3. Full range of motion"
+             
+        self.cues_list.clear()
+        for cue in cues_text.split('\n'):
+            self.cues_list.addItem(QListWidgetItem(cue))
+
+        # Update Progress Text
         total_ex = len(self.controller.exercises)
         current_idx = self.controller.current_exercise_index + 1
         self.lbl_progress.setText(f"EXERCISE {current_idx} OF {total_ex}")
@@ -416,3 +437,10 @@ class ActiveTrackerWidget(QWidget):
         
         event_bus.workout_completed.emit() # Triggers dashboard update
         self.lbl_exercise_name.setText("Workout Complete!")
+
+    def _handle_undo_set(self):
+        if self.controller.undo_last_set():
+            self._update_display()
+            # If btn_log was disabled on workout complete, ensure we re-enable it:
+            if hasattr(self, 'btn_log'):
+                self.btn_log.setEnabled(True)
