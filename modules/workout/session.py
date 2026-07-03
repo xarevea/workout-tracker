@@ -9,7 +9,7 @@ from core.database import get_connection
 from core.events import event_bus
 
 class FitbitSyncWorker(QRunnable):
-    """Handles network requests in the background so the GUI doesn't freeze."""
+    """Background task to fetch Fitbit API data without freezing GUI."""
     def __init__(self, workout_id, duration):
         super().__init__()
         self.workout_id = workout_id
@@ -19,28 +19,27 @@ class FitbitSyncWorker(QRunnable):
     @pyqtSlot()
     def run(self):
         try:
-            # Attempt to sync with health provider
             metrics = self.client.get_workout_metrics(self.duration)
             if metrics:
-                # Tell the UI the sync was successful
-                event_bus.emit('FITBIT_SYNC_SUCCESS', {'id': self.workout_id, 'metrics': metrics})
+                event_bus.FITBIT_SYNC_SUCCESS.emit({'id': self.workout_id, 'metrics': metrics})
             else:
-                event_bus.emit('FITBIT_SYNC_FAILED', "No metrics returned.")
+                event_bus.FITBIT_SYNC_FAILED.emit("No metrics returned.")
         except Exception as e:
-            event_bus.emit('FITBIT_SYNC_FAILED', str(e))
+            event_bus.FITBIT_SYNC_FAILED.emit(str(e))
 
 class WorkoutSessionController:
     def __init__(self):
         self.workout_id = None
         self.current_user_id = 1
-        self.start_time: Optional[float] = None
-        self.is_active: bool = False
-        self.exercises = []
+        self.is_active = False
+        self.start_time = 0
         self.current_exercise_index = 0
         self.current_set = 1
+        self.exercises = []
         self.session_logs = []
+        self.template_name = ""
 
-        event_bus.subscribe('USER_CHANGED', self._update_active_user)
+        event_bus.USER_CHANGED.connect(self._update_active_user)
 
     def _update_active_user(self, user_id: int):
         """Keeps the session controller aware of the active user."""
@@ -110,22 +109,36 @@ class WorkoutSessionController:
         self.current_set = 1
 
     def finish_workout(self) -> dict:
+        if not self.session_logs:
+            return None
+            
         self.is_active = False
-        duration_minutes = int((time.time() - self.start_time) // 60) if self.start_time else 0
+        duration_minutes = int((time.time() - self.start_time) / 60.0)
         
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT access_token, refresh_token FROM api_integrations WHERE provider_name='Fitbit'")
-        api_keys = cursor.fetchone()
-        conn.close()
+        # Use the class-tracked current_user_id to save to DB
+        self.workout_id = WorkoutDatabaseManager.create_workout(
+            user_id=self.current_user_id, 
+            name=self.template_name, 
+            duration=duration_minutes
+        )
+        
+        for log in self.session_logs:
+            WorkoutDatabaseManager.log_set(
+                workout_id=self.workout_id,
+                exercise_name=log['exercise'],
+                set_number=log['set_number'],
+                reps=log['reps'],
+                weight=log['weight'],
+                rpe=log['rpe'],
+                target_hit=log['target_hit'],
+                is_warmup=log.get('is_warmup', False)
+            )
 
-        if api_keys and api_keys['access_token']:
-            try:
-                health_api = FitbitClient(client_id=api_keys['access_token'], client_secret=api_keys['refresh_token'])
-                if health_api.authenticate():
-                    metrics = health_api.get_workout_metrics(self.start_time, time.time())
-                    print(f"Fitbit Synced! Avg HR: {metrics['avg_hr']} bpm, Calories: {metrics['calories']}")
-            except Exception as e:
-                print(f"Fitbit API Error: {e}")
-
-        return {"duration_minutes": duration_minutes, "logs": self.session_logs}
+        # Offload network API to thread
+        worker = FitbitSyncWorker(self.workout_id, duration_minutes)
+        QThreadPool.globalInstance().start(worker)
+        
+        # Fire signal to prompt Review Dialog
+        event_bus.WORKOUT_COMPLETED.emit(self.workout_id)
+        
+        return self.workout_id

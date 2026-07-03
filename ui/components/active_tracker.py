@@ -1,4 +1,5 @@
 import os
+from collections import defaultdict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QSpinBox, QDoubleSpinBox, QSlider, 
@@ -13,9 +14,9 @@ from PyQt6.QtWidgets import QSystemTrayIcon, QStyle
 from ui.components.body_heatmap import AnatomicalHeatmap
 from core.database import get_connection
 from modules.equipment.plate_calculator import PlateCalculator
-from ui.components.review_dialog import WorkoutReviewDialog
 from core.db_operations import WorkoutDatabaseManager
 from core.events import event_bus
+from modules.progression.engine import ProgressionEngine
 
 class ActiveTrackerWidget(QWidget):
     def __init__(self, controller, minimap, global_timer_lbl=None, parent=None):
@@ -402,11 +403,9 @@ class ActiveTrackerWidget(QWidget):
         self.global_timer_lbl.setText("Workout Complete")
         self.global_timer_lbl.setStyleSheet("color: #888;")
         
-        from collections import defaultdict
         logs_by_ex = defaultdict(list)
         for log in workout_data['logs']: logs_by_ex[log['exercise']].append(log)
-            
-        from modules.progression.engine import ProgressionEngine
+                    
         engine = ProgressionEngine()
         suggestions = {}
         

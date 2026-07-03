@@ -146,8 +146,8 @@ class MainWindow(QMainWindow):
         user_id = self.user_combo.itemData(index)
         if not user_id: return
         
-        # Tell the rest of the app the active user changed (Dashboard can listen to this!)
-        event_bus.emit('USER_CHANGED', user_id)
+        # CORRECT PyQt6 Event emission
+        event_bus.USER_CHANGED.emit(user_id)
         
         self.program_combo.blockSignals(True)
         self.program_combo.clear()
@@ -177,8 +177,8 @@ class MainWindow(QMainWindow):
         from core.db_operations import WorkoutDatabaseManager
         WorkoutDatabaseManager.set_active_program(user_id, program_id)
         
-        # Tell the rest of the app the active program changed
-        event_bus.emit('PROGRAM_CHANGED', program_id)
+        # CORRECT PyQt6 Event emission
+        event_bus.PROGRAM_CHANGED.emit(program_id)
 
     def _setup_ui(self):
         main_widget = QWidget()
