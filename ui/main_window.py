@@ -13,6 +13,7 @@ from ui.components.active_tracker import ActiveTrackerWidget
 from ui.components.minimap import WorkoutMinimap
 from ui.views.bodyweight_hub import BodyweightHubView
 from ui.views.dashboard import DashboardView
+from ui.views.history import WorkoutHistoryView
 from ui.views.program_sandbox import ProgramSandboxView
 from ui.views.routine_builder import RoutineBuilderView
 from ui.views.settings import SettingsView
@@ -246,11 +247,15 @@ class MainWindow(QMainWindow):
         self.program_sandbox_view = ProgramSandboxView()
         self._add_stacked_widget(self.program_sandbox_view, "Program Sandbox")
         
-        # 4. Bodyweight Hub
+        # 4. Workout History
+        self.history_view = WorkoutHistoryView()
+        self._add_stacked_widget(self.history_view, "Workout History")
+        
+        # 5. Bodyweight Hub
         self.bodyweight_view = BodyweightHubView()
         self._add_stacked_widget(self.bodyweight_view, "Bodyweight Hub")
         
-        # 5. Settings
+        # 6. Settings
         self.settings_view = SettingsView()
         self._add_stacked_widget(self.settings_view, "Settings")
         

@@ -31,6 +31,7 @@ class WorkoutSessionController:
     def __init__(self):
         self.workout_id = None
         self.current_user_id = 1
+        self.current_program_id = None
         self.is_active = False
         self.start_time = 0
         self.current_exercise_index = 0
@@ -40,9 +41,13 @@ class WorkoutSessionController:
         self.template_name = ""
 
         event_bus.USER_CHANGED.connect(self._update_active_user)
+        event_bus.PROGRAM_CHANGED.connect(self._update_active_program)
 
     def _update_active_user(self, user_id: int):
         self.current_user_id = user_id
+
+    def _update_active_program(self, program_id: int):
+        self.current_program_id = program_id
 
     def undo_last_set(self) -> bool:
         """Safely rewinds state by recalculating position from remaining logs."""

@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, 
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
     QComboBox, QSpinBox, QSplitter, QListWidget, QAbstractItemView,
-    QListWidgetItem
+    QListWidgetItem, QMessageBox
 )
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt
@@ -34,14 +34,19 @@ class ProgramSandboxView(BaseView):
         self._load_exercise_bank()
 
     def refresh_data(self):
-        """
-        Triggered by MainWindow._switch_view().
-        Ensures the exercise bank is completely up to date with the database.
-        """
         current_search = self.search_bar.text()
         self._load_exercise_bank()
-        if current_search:
-            self._filter_bank(current_search)
+        
+        # Refresh the Load Program dropdown based on current user
+        self.combo_load_program.blockSignals(True)
+        self.combo_load_program.clear()
+        self.combo_load_program.addItem("-- Create New Program --", userData=None)
+        programs = WorkoutDatabaseManager.get_programs_for_user(self.current_user_id)
+        for p in programs:
+            self.combo_load_program.addItem(p['name'], userData=p['id'])
+        self.combo_load_program.blockSignals(False)
+        
+        if current_search: self._filter_bank(current_search)
         self._trigger_live_feedback()
     
     def _setup_left_panel(self):
@@ -106,16 +111,20 @@ class ProgramSandboxView(BaseView):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         
+        # --- Program Loading Header ---
         header_layout = QHBoxLayout()
         header_layout.addWidget(QLabel("<b>Program Schedule</b>"))
         
-        self.combo_template = QComboBox()
-        self.combo_template.addItems(["Custom", "Push/Pull/Legs", "Upper/Lower"])
-        header_layout.addWidget(self.combo_template)
-        # self.btn_auto_split = QPushButton("⚡ Auto-Assign Days (PPL)")
-        # self.btn_auto_split.clicked.connect(self._auto_assign_split)
-        # header_layout.addWidget(self.btn_auto_split)
+        self.combo_load_program = QComboBox()
+        self.combo_load_program.addItem("-- Create New Program --", userData=None)
+        self.combo_load_program.currentIndexChanged.connect(self._load_existing_program)
+        header_layout.addWidget(self.combo_load_program)
         layout.addLayout(header_layout)
+        
+        # --- Program Name Editor ---
+        self.txt_program_name = QLineEdit()
+        self.txt_program_name.setPlaceholderText("Enter Program Name...")
+        layout.addWidget(self.txt_program_name)
         
         # The interactive pool table
         self.pool_table = QTableWidget(0, 4)
@@ -126,13 +135,13 @@ class ProgramSandboxView(BaseView):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.pool_table)
         
-        # Fatigue Warning System
         self.lbl_fatigue = QLabel("Daily Volume: Safe")
         self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
         layout.addWidget(self.lbl_fatigue)
         
         self.btn_save = QPushButton("Save Program")
         self.btn_save.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
+        self.btn_save.clicked.connect(self._save_program)
         layout.addWidget(self.btn_save)
         
         self.splitter.addWidget(panel)
@@ -143,6 +152,67 @@ class ProgramSandboxView(BaseView):
         for ex in self.all_exercises:
             self.exercise_list.addItem(ex['name'])
 
+    def _load_existing_program(self):
+        program_id = self.combo_load_program.currentData()
+        self.pool_table.setRowCount(0)
+        
+        if not program_id:
+            self.txt_program_name.clear()
+            self._trigger_live_feedback()
+            return
+            
+        self.txt_program_name.setText(self.combo_load_program.currentText())
+        data = WorkoutDatabaseManager.get_sandbox_program_data(program_id)
+        
+        for item in data:
+            row = self.pool_table.rowCount()
+            self.pool_table.insertRow(row)
+            self.pool_table.setItem(row, 0, QTableWidgetItem(item['exercise']))
+            
+            spin_sets = QSpinBox()
+            spin_sets.setRange(1, 10)
+            spin_sets.setValue(item['sets'])
+            spin_sets.valueChanged.connect(self._trigger_live_feedback)
+            self.pool_table.setCellWidget(row, 1, spin_sets)
+            
+            combo_day = QComboBox()
+            combo_day.addItems(["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"])
+            combo_day.setCurrentText(item['day'])
+            combo_day.currentTextChanged.connect(self._trigger_live_feedback)
+            self.pool_table.setCellWidget(row, 2, combo_day)
+            
+            btn_remove = QPushButton("X")
+            btn_remove.setStyleSheet("color: #F44336;")
+            btn_remove.clicked.connect(lambda _, r=row: self._remove_from_pool(r))
+            self.pool_table.setCellWidget(row, 3, btn_remove)
+            
+        self._trigger_live_feedback()
+
+    def _save_program(self):
+        name = self.txt_program_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Error", "Please enter a program name.")
+            return
+            
+        pool_data = []
+        for row in range(self.pool_table.rowCount()):
+            if not self.pool_table.item(row, 0): continue
+            pool_data.append({
+                'exercise': self.pool_table.item(row, 0).text(),
+                'sets': self.pool_table.cellWidget(row, 1).value(),
+                'day': self.pool_table.cellWidget(row, 2).currentText()
+            })
+            
+        WorkoutDatabaseManager.save_sandbox_program(
+            user_id=self.current_user_id,
+            program_id=self.combo_load_program.currentData(),
+            program_name=name,
+            pool_data=pool_data
+        )
+        
+        QMessageBox.information(self, "Success", f"Program '{name}' saved successfully!")
+        self.refresh_data()
+    
     def _on_heatmap_clicked(self, muscle_name: str, region_name: str):
         if self.combo_bodypart.findText(region_name) != -1:
             self.combo_bodypart.setCurrentText(region_name)

@@ -347,3 +347,122 @@ class WorkoutDatabaseManager:
             cursor.execute("UPDATE programs SET is_active = 0 WHERE user_id = ?", (user_id,))
             if program_id is not None:
                 cursor.execute("UPDATE programs SET is_active = 1 WHERE id = ?", (program_id,))
+
+
+   # --- ADD TO: core/db_operations.py ---
+
+    @staticmethod
+    def get_program_templates(program_id: int) -> list:
+        """Fetches only the routine templates associated with a specific program."""
+        if not program_id: return []
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT t.id, t.name, pd.day_number
+            FROM program_days pd
+            JOIN routine_templates t ON pd.template_id = t.id
+            WHERE pd.program_id = ?
+            ORDER BY pd.day_number ASC
+        ''', (program_id,))
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def save_sandbox_program(user_id: int, program_id: int, program_name: str, pool_data: list):
+        """Creates or overwrites a program and auto-generates daily templates based on the Sandbox UI."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            # 1. Upsert Program
+            if program_id:
+                cursor.execute("UPDATE programs SET name = ? WHERE id = ?", (program_name, program_id))
+            else:
+                cursor.execute("INSERT INTO programs (user_id, name) VALUES (?, ?)", (user_id, program_name))
+                program_id = cursor.lastrowid
+            
+            cursor.execute("DELETE FROM program_days WHERE program_id = ?", (program_id,))
+            
+            from collections import defaultdict
+            days = defaultdict(list)
+            for item in pool_data: days[item['day']].append(item)
+            
+            day_map = {"Day 1": 1, "Day 2": 2, "Day 3": 3, "Day 4": 4, "Day 5": 5, "Day 6": 6, "Day 7": 7}
+            for day_str, ex_list in days.items():
+                if day_str == "Unassigned": continue
+                day_num = day_map.get(day_str, 1)
+                t_name = f"{program_name} - {day_str}"
+                
+                # 2. Upsert Template for this day
+                cursor.execute("INSERT OR IGNORE INTO routine_templates (name, is_active) VALUES (?, 1)", (t_name,))
+                cursor.execute("SELECT id FROM routine_templates WHERE name = ?", (t_name,))
+                t_id = cursor.fetchone()['id']
+                
+                cursor.execute("DELETE FROM routine_exercises WHERE template_id = ?", (t_id,))
+                
+                # 3. Insert Exercises (using default target reps if newly added)
+                for ex in ex_list:
+                    cursor.execute('''INSERT INTO routine_exercises 
+                                      (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds) 
+                                      VALUES (?, ?, ?, 8, 12, 0.0, 90)''', 
+                                      (t_id, ex['exercise'], ex['sets']))
+                    
+                # 4. Map Day to Program
+                cursor.execute("INSERT INTO program_days (program_id, day_number, template_id) VALUES (?, ?, ?)", (program_id, day_num, t_id))
+                
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_sandbox_program_data(program_id: int) -> list:
+        """Loads a program back into the Sandbox editor format."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT pd.day_number, re.exercise_name, re.target_sets
+            FROM program_days pd
+            JOIN routine_templates t ON pd.template_id = t.id
+            JOIN routine_exercises re ON t.id = re.template_id
+            WHERE pd.program_id = ?
+            ORDER BY pd.day_number ASC
+        ''', (program_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [{'day': f"Day {r['day_number']}", 'exercise': r['exercise_name'], 'sets': r['target_sets']} for r in rows]
+
+    @staticmethod
+    def get_workout_history(user_id: int) -> list:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, date, name, duration_minutes FROM workouts WHERE user_id = ? ORDER BY date DESC", (user_id,))
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def get_workout_logs(workout_id: int) -> list:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT l.id, e.name as exercise, l.set_number, l.reps, l.weight_lbs, l.rpe, l.is_warmup
+            FROM workout_logs l
+            JOIN exercises e ON l.exercise_id = e.id
+            WHERE l.workout_id = ?
+            ORDER BY l.id ASC
+        ''', (workout_id,))
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def delete_workout(workout_id: int):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM workout_logs WHERE workout_id = ?", (workout_id,))
+        cursor.execute("DELETE FROM workouts WHERE id = ?", (workout_id,))
+        conn.commit()
+        conn.close() 

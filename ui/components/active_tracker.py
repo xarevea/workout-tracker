@@ -46,13 +46,19 @@ class ActiveTrackerWidget(QWidget):
         self.combo_workout_selector.blockSignals(True)
         self.combo_workout_selector.clear()
         
-        templates = WorkoutDatabaseManager.get_all_templates()
-        for t in templates:
-            self.combo_workout_selector.addItem(t['name'], userData=t['id'])
+        templates = WorkoutDatabaseManager.get_program_templates(self.controller.current_program_id)
+        if not templates:
+            self.combo_workout_selector.addItem("-- No Program / Rest Day --")
+        else:
+            for t in templates:
+                self.combo_workout_selector.addItem(f"{t['name']} (Day {t['day_number']})", userData=t['id'])
+                
         self.combo_workout_selector.blockSignals(False)
 
-        if self.combo_workout_selector.count() > 0:
+        if self.combo_workout_selector.count() > 0 and self.combo_workout_selector.currentData():
             self._load_selected_workout()
+        else:
+            self.lbl_exercise_name.setText("Select a Program")
 
     def _load_selected_workout(self):
         template_id = self.combo_workout_selector.currentData()
