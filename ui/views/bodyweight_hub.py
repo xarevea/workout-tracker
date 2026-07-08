@@ -62,13 +62,12 @@ class BodyweightHubView(BaseView):
             row = self.table.rowAt(pos.y())
             if row >= 0:
                 date_str = self.table.item(row, 0).text()
-                # You'll need to add delete_bodyweight_log(date_str) to db_operations
-                WorkoutDatabaseManager.delete_bodyweight_log(date_str)
+                WorkoutDatabaseManager.delete_bodyweight_log(self.current_user_id, date_str)
                 self.refresh_data()
 
     def refresh_data(self):
         self.table.setRowCount(0)
-        logs = WorkoutDatabaseManager.get_bodyweight_history()
+        logs = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id)
         for i, log in enumerate(reversed(logs)): # Show newest first
             self.table.insertRow(i)
             self.table.setItem(i, 0, QTableWidgetItem(log['date']))
@@ -76,5 +75,5 @@ class BodyweightHubView(BaseView):
             
     def _log_weight(self):
         date_str = self.calendar.selectedDate().toString("yyyy-MM-dd")
-        WorkoutDatabaseManager.log_bodyweight(date_str, self.spin_weight.value())
+        WorkoutDatabaseManager.log_bodyweight(self.current_user_id, date_str, self.spin_weight.value())
         self.refresh_data()

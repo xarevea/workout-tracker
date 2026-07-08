@@ -1,3 +1,4 @@
+# core/db_operations.py
 from typing import List, Dict, Optional
 import sqlite3
 
@@ -56,11 +57,11 @@ class WorkoutDatabaseManager:
         return inventory
 
     @staticmethod
-    def save_completed_workout(workout_name: str, duration_minutes: int, bodyweight: float, logs: list) -> int:
+    def save_completed_workout(user_id: int, workout_name: str, duration_minutes: int, bodyweight: float, logs: list) -> int:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO workouts (name, duration_minutes, bodyweight_at_time) VALUES (?, ?, ?)", 
-                       (workout_name, duration_minutes, bodyweight))
+        cursor.execute("INSERT INTO workouts (user_id, name, duration_minutes, bodyweight_at_time) VALUES (?, ?, ?, ?)", 
+                       (user_id, workout_name, duration_minutes, bodyweight))
         workout_id = cursor.lastrowid
         
         for log in logs:
@@ -78,16 +79,9 @@ class WorkoutDatabaseManager:
         return workout_id
     
     @staticmethod
-    def get_weekly_tonnage() -> dict:
-        """
-        Calculates total tonnage per week. 
-        CALISTHENICS MATH: If an exercise is bodyweight, it factors the user's 
-        logged bodyweight into the total resistance moved.
-        """
+    def get_weekly_tonnage(user_id: int) -> dict:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        # We use SQLite's strftime('%W', date) to group by week number
         cursor.execute('''
             SELECT 
                 strftime('%W', w.date) as week,
@@ -100,82 +94,75 @@ class WorkoutDatabaseManager:
             FROM workout_logs l
             JOIN workouts w ON l.workout_id = w.id
             JOIN exercises e ON l.exercise_id = e.id
+            WHERE w.user_id = ?
             GROUP BY week
             ORDER BY week ASC
-        ''')
-        
+        ''', (user_id,))
         results = cursor.fetchall()
         conn.close()
         return {row['week']: row['total_tonnage'] for row in results}
 
     @staticmethod
-    def get_1rm_trends(exercise_name: str) -> dict:
-        """
-        Uses the Epley formula: 1RM = Weight * (1 + Reps/30) to estimate maxes over time.
-        """
+    def get_1rm_trends(user_id: int, exercise_name: str) -> dict:
         conn = get_connection()
         cursor = conn.cursor()
-        
         cursor.execute('''
             SELECT w.date, l.weight_lbs, l.reps
             FROM workout_logs l
             JOIN workouts w ON l.workout_id = w.id
             JOIN exercises e ON l.exercise_id = e.id
-            WHERE e.name = ?
+            WHERE e.name = ? AND w.user_id = ?
             ORDER BY w.date ASC
-        ''', (exercise_name,))
+        ''', (exercise_name, user_id))
         
         results = cursor.fetchall()
         conn.close()
         
         trends = {}
         for row in results:
-            date = row['date'].split(' ')[0] # Get just the YYYY-MM-DD
-            # Epley Formula
+            date = row['date'].split(' ')[0] 
             estimated_1rm = row['weight_lbs'] * (1 + (row['reps'] / 30.0))
-            
-            # Keep the highest 1RM for that specific day
             if date not in trends or estimated_1rm > trends[date]:
                 trends[date] = estimated_1rm
-                
         return trends
 
     @staticmethod
-    def get_all_workout_dates() -> list:
-        """Returns a list of YYYY-MM-DD strings for days a workout occurred."""
+    def get_all_workout_dates(user_id: int) -> list:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT date(date) as w_date FROM workouts")
+        cursor.execute("SELECT DISTINCT date(date) as w_date FROM workouts WHERE user_id = ?", (user_id,))
         results = [row['w_date'] for row in cursor.fetchall()]
         conn.close()
         return results
 
     @staticmethod
-    def get_tracked_exercises() -> list:
-        """Returns a list of exercise names that have logged data."""
+    def get_tracked_exercises(user_id: int) -> list:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT DISTINCT e.name 
             FROM exercises e
             JOIN workout_logs l ON e.id = l.exercise_id
+            JOIN workouts w ON l.workout_id = w.id
+            WHERE w.user_id = ?
             ORDER BY e.name ASC
-        ''')
+        ''', (user_id,))
         results = [row['name'] for row in cursor.fetchall()]
         conn.close()
         return results
 
     @staticmethod
-    def get_active_program_volume() -> dict:
+    def get_active_program_volume(user_id: int) -> dict:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT e.primary_muscle, e.secondary_muscles, r.target_sets
-            FROM routine_exercises r
+            FROM program_days pd
+            JOIN programs p ON pd.program_id = p.id
+            JOIN routine_exercises r ON pd.template_id = r.template_id
             JOIN exercises e ON r.exercise_name = e.name
-            JOIN routine_templates t ON r.template_id = t.id
-            WHERE t.is_active = 1
-        ''')
+            WHERE p.user_id = ? AND p.is_active = 1 AND pd.is_deload = 0
+        ''', (user_id,))
         exercises = cursor.fetchall()
         conn.close()
 
@@ -193,12 +180,11 @@ class WorkoutDatabaseManager:
 
     @staticmethod
     def get_routine_exercises(template_id: int) -> list:
-        from core.database import get_connection
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT r.exercise_name as name, r.target_sets, r.target_reps_min, r.target_reps_max, 
-                   r.target_weight, r.rest_seconds, e.primary_muscle, e.secondary_muscles
+                   r.target_weight, r.rest_seconds, e.primary_muscle, e.secondary_muscles, e.cues
             FROM routine_exercises r
             JOIN exercises e ON r.exercise_name = e.name
             WHERE r.template_id = ?
@@ -209,28 +195,41 @@ class WorkoutDatabaseManager:
 
     # --- BODYWEIGHT HUB METHODS ---
     @staticmethod
-    def log_bodyweight(date_str: str, weight: float):
-        from core.database import get_connection
+    def log_bodyweight(user_id: int, date_str: str, weight: float):
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO bodyweight_log (date, weight_lbs) VALUES (?, ?)", (date_str, weight))
+        cursor.execute("INSERT INTO bodyweight_log (user_id, date, weight_lbs) VALUES (?, ?, ?)", (user_id, date_str, weight))
+        conn.commit()
+        conn.close()
+        
+    @staticmethod
+    def delete_bodyweight_log(user_id: int, date_str: str):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM bodyweight_log WHERE user_id = ? AND date = ?", (user_id, date_str))
         conn.commit()
         conn.close()
 
     @staticmethod
-    def get_bodyweight_history():
-        from core.database import get_connection
+    def get_bodyweight_history(user_id: int):
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT date, weight_lbs FROM bodyweight_log ORDER BY date ASC")
+        cursor.execute("SELECT date, weight_lbs FROM bodyweight_log WHERE user_id = ? ORDER BY date ASC", (user_id,))
         res = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return res
 
     @staticmethod
-    def get_calisthenics_volume_trend():
-        """Computes Bodyweight + Added Weight volume to prove Calisthenics strength gains."""
-        from core.database import get_connection
+    def get_latest_bodyweight(user_id: int) -> float:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT weight_lbs FROM bodyweight_log WHERE user_id = ? ORDER BY date DESC LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row['weight_lbs'] if row else 185.0
+
+    @staticmethod
+    def get_calisthenics_volume_trend(user_id: int):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -238,9 +237,9 @@ class WorkoutDatabaseManager:
             FROM workout_logs l
             JOIN workouts w ON l.workout_id = w.id
             JOIN exercises e ON l.exercise_id = e.id
-            WHERE e.category = 'Bodyweight' AND l.is_warmup = 0
+            WHERE e.category = 'Bodyweight' AND l.is_warmup = 0 AND w.user_id = ?
             GROUP BY date_val ORDER BY date_val ASC
-        ''')
+        ''', (user_id,))
         res = {row['date_val']: row['tonnage'] for row in cursor.fetchall()}
         conn.close()
         return res
@@ -248,7 +247,6 @@ class WorkoutDatabaseManager:
     # --- PROGRAM BUILDER METHODS ---
     @staticmethod
     def get_all_templates():
-        from core.database import get_connection
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, name FROM routine_templates ORDER BY name ASC")
@@ -258,7 +256,6 @@ class WorkoutDatabaseManager:
 
     @staticmethod
     def save_program(name: str, cycle_length: int, days_data: list):
-        from core.database import get_connection
         conn = get_connection()
         cursor = conn.cursor()
         try:
@@ -281,7 +278,6 @@ class WorkoutDatabaseManager:
             
     @staticmethod
     def get_program_volume_map(program_name: str):
-        from core.database import get_connection
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -308,46 +304,30 @@ class WorkoutDatabaseManager:
 
     @staticmethod
     def calculate_muscle_volume(exercises_data: list) -> dict:
-        """
-        Takes a list: [{'name': 'Bench Press', 'sets': 3}, ...] 
-        Returns a mapped volume dictionary: {'Chest': 3, 'Triceps': 1.5, ...}
-        """
         if not exercises_data:
             return {}
-            
         conn = get_connection()
         cursor = conn.cursor()
-        
         volume_map = {}
-        
         for ex in exercises_data:
             name = ex.get('name')
             sets = ex.get('sets', 0)
-            
-            # Fetch muscle mappings for this exercise
             cursor.execute("SELECT primary_muscle, secondary_muscles FROM exercises WHERE name = ?", (name,))
             row = cursor.fetchone()
-            
             if row:
                 primary = row['primary_muscle']
                 if primary:
-                    # Primary muscle gets 100% of the set volume
                     volume_map[primary] = volume_map.get(primary, 0) + sets
-                
                 secondary_str = row['secondary_muscles']
                 if secondary_str:
-                    # Parse comma-separated secondary muscles
                     secondaries = [s.strip() for s in secondary_str.split(',') if s.strip()]
                     for sec in secondaries:
-                        # Architectural Choice: Secondary muscles get 50% credit per set
                         volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
-                        
         conn.close()
         return volume_map
 
     @staticmethod
     def get_all_users() -> List[Dict]:
-        """Fetches all registered users for the context switcher."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, username FROM users ORDER BY id")
@@ -355,7 +335,6 @@ class WorkoutDatabaseManager:
 
     @staticmethod
     def get_programs_for_user(user_id: int) -> List[Dict]:
-        """Fetches all programs belonging to a specific user."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, name, is_active FROM programs WHERE user_id = ?", (user_id,))
@@ -363,11 +342,8 @@ class WorkoutDatabaseManager:
 
     @staticmethod
     def set_active_program(user_id: int, program_id: int):
-        """Sets a specific program as active for the given user, deactivating all others."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE programs SET is_active = 0 WHERE user_id = ?", (user_id,))
             if program_id is not None:
                 cursor.execute("UPDATE programs SET is_active = 1 WHERE id = ?", (program_id,))
-
-                

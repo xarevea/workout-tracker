@@ -42,27 +42,29 @@ class WorkoutSessionController:
         event_bus.USER_CHANGED.connect(self._update_active_user)
 
     def _update_active_user(self, user_id: int):
-        """Keeps the session controller aware of the active user."""
         self.current_user_id = user_id
 
     def undo_last_set(self) -> bool:
-        """TASK 1: Pops the last log and safely rewinds the session state."""
+        """Safely rewinds state by recalculating position from remaining logs."""
         if not self.session_logs:
-            return False # Nothing to undo
+            return False 
             
-        last_log = self.session_logs.pop()
+        self.session_logs.pop()
         
-        # Step back the set counter
-        if self.current_set > 1:
-            self.current_set -= 1
-        else:
-            # If we were on set 1, we need to revert to the previous exercise entirely
-            if self.current_exercise_index > 0:
-                self.current_exercise_index -= 1
-                prev_ex_name = self.exercises[self.current_exercise_index]['name']
-                # Count how many logs belong to the previous exercise to set the proper set number
-                prev_logs = [log for log in self.session_logs if log['exercise'] == prev_ex_name]
-                self.current_set = len(prev_logs) + 1
+        # Rebuild state machine completely based on remaining valid logs
+        self.current_exercise_index = 0
+        self.current_set = 1
+        
+        for log in self.session_logs:
+            if not log.get('is_warmup', False):
+                if self.current_exercise_index < len(self.exercises):
+                    ex = self.exercises[self.current_exercise_index]
+                    if self.current_set < ex['target_sets']:
+                        self.current_set += 1
+                    else:
+                        self.current_exercise_index += 1
+                        self.current_set = 1
+                        
         return True
 
     def load_template(self, template_id: int):
@@ -74,7 +76,7 @@ class WorkoutSessionController:
         self.is_active = False
 
     def toggle_workout_state(self):
-        if self.start_time is None: self.start_time = time.time()
+        if self.start_time is None or self.start_time == 0: self.start_time = time.time()
         self.is_active = not self.is_active
 
     def get_current_exercise(self) -> Dict:
@@ -90,7 +92,8 @@ class WorkoutSessionController:
             "weight": weight,
             "rpe": rpe,
             "timestamp": time.time(),
-            "is_warmup": is_warmup
+            "is_warmup": is_warmup,
+            "target_hit": reps >= exercise['target_reps_min'] if not is_warmup else True
         }
         self.session_logs.append(log_entry)
         
@@ -109,36 +112,7 @@ class WorkoutSessionController:
         self.current_set = 1
 
     def finish_workout(self) -> dict:
-        if not self.session_logs:
-            return None
-            
+        if not self.session_logs: return None
         self.is_active = False
-        duration_minutes = int((time.time() - self.start_time) / 60.0)
-        
-        # Use the class-tracked current_user_id to save to DB
-        self.workout_id = WorkoutDatabaseManager.create_workout(
-            user_id=self.current_user_id, 
-            name=self.template_name, 
-            duration=duration_minutes
-        )
-        
-        for log in self.session_logs:
-            WorkoutDatabaseManager.log_set(
-                workout_id=self.workout_id,
-                exercise_name=log['exercise'],
-                set_number=log['set_number'],
-                reps=log['reps'],
-                weight=log['weight'],
-                rpe=log['rpe'],
-                target_hit=log['target_hit'],
-                is_warmup=log.get('is_warmup', False)
-            )
-
-        # Offload network API to thread
-        worker = FitbitSyncWorker(self.workout_id, duration_minutes)
-        QThreadPool.globalInstance().start(worker)
-        
-        # Fire signal to prompt Review Dialog
-        event_bus.WORKOUT_COMPLETED.emit(self.workout_id)
-        
-        return self.workout_id
+        duration_minutes = int((time.time() - self.start_time) / 60.0) if self.start_time else 0
+        return {"duration_minutes": duration_minutes, "logs": self.session_logs}

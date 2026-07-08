@@ -12,10 +12,12 @@ import numpy as np
 from core.db_operations import WorkoutDatabaseManager
 from ui.components.body_heatmap import AnatomicalHeatmap
 from ui.views.base_view import BaseView
+from core.events import event_bus
 
 class DashboardView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
+        event_bus.WORKOUT_COMPLETED.connect(self.refresh_data) # Live redraw after review dialog
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(20, 20, 20, 20)
 
@@ -33,7 +35,6 @@ class DashboardView(BaseView):
         left_top_layout.addWidget(self.calendar)
         top_layout.addLayout(left_top_layout)
 
-        # Body Heatmap for Active Program
         self.heatmap = AnatomicalHeatmap()
         top_layout.addWidget(self.heatmap, stretch=1)
         
@@ -58,21 +59,20 @@ class DashboardView(BaseView):
 
     def refresh_data(self):
         self._highlight_calendar_dates()
-        volume_map = WorkoutDatabaseManager.get_active_program_volume()
+        volume_map = WorkoutDatabaseManager.get_active_program_volume(self.current_user_id)
         self.heatmap.update_heatmap(volume_map)
         
-        exercises = WorkoutDatabaseManager.get_tracked_exercises()
+        exercises = WorkoutDatabaseManager.get_tracked_exercises(self.current_user_id)
         self.exercise_dropdown.blockSignals(True)
         self.exercise_dropdown.clear()
         
-        # NEW: Inject the Bodyweight Proof View to the top of the list!
         self.exercise_dropdown.addItem("Overview: Weight Loss vs. Calisthenics Strength")
         self.exercise_dropdown.addItems(exercises)
         self.exercise_dropdown.blockSignals(False)
         self._plot_trend_data(self.exercise_dropdown.currentText())
 
     def _highlight_calendar_dates(self):
-        dates = WorkoutDatabaseManager.get_all_workout_dates()
+        dates = WorkoutDatabaseManager.get_all_workout_dates(self.current_user_id)
         fmt = QTextCharFormat()
         fmt.setBackground(QColor("#4CAF50"))
         fmt.setForeground(QColor("white"))
@@ -85,7 +85,6 @@ class DashboardView(BaseView):
             self.calendar.setDateTextFormat(qdate, fmt)
 
     def _plot_trend_data(self, selection: str):
-        # We must wipe the figure entirely to avoid dual-axis artifacting
         self.fig.clear()
         self.ax = self.fig.add_subplot(111)
         self.ax.set_facecolor('#1e1e1e')
@@ -94,12 +93,12 @@ class DashboardView(BaseView):
         if selection == "Overview: Weight Loss vs. Calisthenics Strength":
             self._plot_bw_vs_calisthenics()
         else:
-            self._plot_1rm_standard(selection) # (Rename your old plot logic to _plot_1rm_standard)
+            self._plot_1rm_standard(selection) 
 
     def _plot_bw_vs_calisthenics(self):
         import numpy as np
-        bw_data = WorkoutDatabaseManager.get_bodyweight_history() 
-        cal_data = WorkoutDatabaseManager.get_calisthenics_volume_trend() 
+        bw_data = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id) 
+        cal_data = WorkoutDatabaseManager.get_calisthenics_volume_trend(self.current_user_id) 
 
         if not bw_data and not cal_data:
             self.canvas.draw(); return
@@ -116,13 +115,11 @@ class DashboardView(BaseView):
 
         cal_y = [cal_data.get(d, 0) for d in all_dates]
 
-        # Plot 1: Weight Loss Trend
         self.ax.plot(x_numeric, bw_y, color='#FF9800', marker='o', label='Bodyweight', linewidth=2)
         self.ax.set_ylabel("Morning Bodyweight (lbs)", color='#FF9800')
         self.ax.tick_params(axis='y', labelcolor='#FF9800')
         self.ax.tick_params(axis='x', colors='white')
         
-        # Plot 2: Calisthenics Tonnage (Proof of Relative Strength)
         ax2 = self.ax.twinx()
         ax2.bar(x_numeric, cal_y, color='#2196F3', alpha=0.5, label='Calisthenics Tonnage')
         ax2.set_ylabel("Total Tonnage (lbs)", color='#2196F3')
@@ -140,13 +137,12 @@ class DashboardView(BaseView):
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
         
-        # Fix for Axis Ticks
         self.ax.tick_params(axis='both', colors='white', labelcolor='white')
         self.ax.xaxis.label.set_color('white')
         self.ax.yaxis.label.set_color('white')
         for spine in self.ax.spines.values(): spine.set_edgecolor('#555555')
 
-        data = WorkoutDatabaseManager.get_1rm_trends(exercise_name)
+        data = WorkoutDatabaseManager.get_1rm_trends(self.current_user_id, exercise_name)
         if not data:
             self.canvas.draw()
             return
