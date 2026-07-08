@@ -1,10 +1,12 @@
-# ui/views/dashboard.py
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCalendarWidget
+from datetime import datetime
+
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCalendarWidget, QMessageBox
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QTextCharFormat, QColor
 
 import matplotlib
 matplotlib.use('QtAgg')
+import matplotlib.dates as mdates
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
@@ -17,13 +19,12 @@ from core.events import event_bus
 class DashboardView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
-        event_bus.WORKOUT_COMPLETED.connect(self.refresh_data) # Live redraw after review dialog
+        event_bus.WORKOUT_COMPLETED.connect(self.refresh_data) 
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(20, 20, 20, 20)
 
         # --- TOP SECTION: Title, Calendar, Heatmap ---
         top_layout = QHBoxLayout()
-        
         left_top_layout = QVBoxLayout()
         title = QLabel("Performance Dashboard")
         title.setStyleSheet("font-size: 24px; font-weight: bold;")
@@ -32,6 +33,8 @@ class DashboardView(BaseView):
         self.calendar = QCalendarWidget()
         self.calendar.setFixedSize(350, 200)
         self.calendar.setStyleSheet("background-color: #2d2d2d; color: white;")
+        
+        self.calendar.clicked.connect(self._show_workout_summary)
         left_top_layout.addWidget(self.calendar)
         top_layout.addLayout(left_top_layout)
 
@@ -95,8 +98,27 @@ class DashboardView(BaseView):
         else:
             self._plot_1rm_standard(selection) 
 
+    def _show_workout_summary(self, qdate):
+        date_str = qdate.toString("yyyy-MM-dd")
+        workouts = WorkoutDatabaseManager.get_workout_history(self.current_user_id)
+        
+        day_workouts = [w for w in workouts if w['date'].startswith(date_str)]
+
+        if not day_workouts:
+            QMessageBox.information(self, "No Workout", f"No workouts recorded on {date_str}.")
+            return
+
+        msg = f"Workouts on {date_str}:\n\n"
+        for w in day_workouts:
+            msg += f"• {w['name']} ({w['duration_minutes']} min)\n"
+            logs = WorkoutDatabaseManager.get_workout_logs(w['id'])
+            for log in logs:
+                msg += f"   - {log['exercise']}: {log['reps']} reps @ {log['weight_lbs']} lbs\n"
+            msg += "\n"
+
+        QMessageBox.information(self, f"Workout Details: {date_str}", msg)
+    
     def _plot_bw_vs_calisthenics(self):
-        import numpy as np
         bw_data = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id) 
         cal_data = WorkoutDatabaseManager.get_calisthenics_volume_trend(self.current_user_id) 
 
@@ -104,7 +126,8 @@ class DashboardView(BaseView):
             self.canvas.draw(); return
             
         all_dates = sorted(list(set([d['date'] for d in bw_data] + list(cal_data.keys()))))
-        x_numeric = np.arange(len(all_dates))
+        date_objs = [datetime.strptime(d, "%Y-%m-%d") for d in all_dates]
+        mdates_vals = mdates.date2num(date_objs)
         
         bw_y = []
         last_bw = bw_data[0]['weight_lbs'] if bw_data else 180
@@ -115,54 +138,55 @@ class DashboardView(BaseView):
 
         cal_y = [cal_data.get(d, 0) for d in all_dates]
 
-        self.ax.plot(x_numeric, bw_y, color='#FF9800', marker='o', label='Bodyweight', linewidth=2)
+        self.ax.plot(date_objs, bw_y, color='#FF9800', marker='o', label='Bodyweight', linewidth=2)
         self.ax.set_ylabel("Morning Bodyweight (lbs)", color='#FF9800')
         self.ax.tick_params(axis='y', labelcolor='#FF9800')
         self.ax.tick_params(axis='x', colors='white')
         
         ax2 = self.ax.twinx()
-        ax2.bar(x_numeric, cal_y, color='#2196F3', alpha=0.5, label='Calisthenics Tonnage')
+        ax2.bar(mdates_vals, cal_y, width=0.6, color='#2196F3', alpha=0.5, label='Calisthenics Tonnage')
         ax2.set_ylabel("Total Tonnage (lbs)", color='#2196F3')
         ax2.tick_params(axis='y', labelcolor='#2196F3')
         
         self.ax.set_title("Mathematical Proof: Weight Loss Driving Relative Strength", color='white', pad=15)
-        self.ax.set_xticks(x_numeric)
-        self.ax.set_xticklabels(all_dates, rotation=45)
+        
+        self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d, %Y'))
+        self.ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        self.fig.autofmt_xdate(rotation=45)
         self.fig.tight_layout()
         self.canvas.draw()
 
     def _plot_1rm_standard(self, exercise_name: str):
         if not exercise_name: return
-        
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
-        
         self.ax.tick_params(axis='both', colors='white', labelcolor='white')
-        self.ax.xaxis.label.set_color('white')
-        self.ax.yaxis.label.set_color('white')
+        self.ax.xaxis.label.set_color('white'); self.ax.yaxis.label.set_color('white')
         for spine in self.ax.spines.values(): spine.set_edgecolor('#555555')
 
         data = WorkoutDatabaseManager.get_1rm_trends(self.current_user_id, exercise_name)
-        if not data:
-            self.canvas.draw()
-            return
+        if not data: self.canvas.draw(); return
 
         dates = list(data.keys())
         weights = list(data.values())
-        x_numeric = np.arange(len(dates))
+        date_objs = [datetime.strptime(d, "%Y-%m-%d") for d in dates]
+        mdates_vals = mdates.date2num(date_objs)
         
-        self.ax.plot(x_numeric, weights, marker='o', color='#2196F3', label='Actual 1RM', linewidth=2, markersize=8)
+        self.ax.plot(date_objs, weights, marker='o', color='#2196F3', label='Actual 1RM', linewidth=2, markersize=8)
 
         if len(weights) > 1:
-            m, b = np.polyfit(x_numeric, weights, 1)
-            x_future = np.arange(len(dates) + 2)
-            y_pred = m * x_future + b
-            self.ax.plot(x_future, y_pred, linestyle='--', color='#FF9800', label='Predicted Trend')
+            m, b = np.polyfit(mdates_vals, weights, 1)
+            future_dates = np.linspace(mdates_vals[0], mdates_vals[-1] + 14, len(dates) + 2)
+            y_pred = m * future_dates + b
+            future_objs = mdates.num2date(future_dates)
+            self.ax.plot(future_objs, y_pred, linestyle='--', color='#FF9800', label='Predicted Trend')
 
         self.ax.set_title(f"Strength Progression: {exercise_name}", color='white', pad=15)
         self.ax.set_ylabel("Estimated 1RM (lbs)", color='white')
-        self.ax.set_xticks(x_numeric)
-        self.ax.set_xticklabels(dates, rotation=45, color='white')
+        
+        self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d, %Y'))
+        self.ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        self.fig.autofmt_xdate(rotation=45)
         
         legend = self.ax.legend(facecolor='#2d2d2d', edgecolor='#555555')
         for text in legend.get_texts(): text.set_color("white")

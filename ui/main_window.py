@@ -2,7 +2,7 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
     QPushButton, QStackedWidget, QLabel, QSystemTrayIcon, QMenu,
-    QComboBox,
+    QComboBox, QInputDialog, QMessageBox
 )
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import Qt
@@ -11,6 +11,7 @@ from core.events import event_bus
 from modules.workout.session import WorkoutSessionController
 from ui.components.active_tracker import ActiveTrackerWidget
 from ui.components.minimap import WorkoutMinimap
+from ui.views.base_view import BaseView
 from ui.views.bodyweight_hub import BodyweightHubView
 from ui.views.dashboard import DashboardView
 from ui.views.history import WorkoutHistoryView
@@ -19,24 +20,19 @@ from ui.views.routine_builder import RoutineBuilderView
 from ui.views.settings import SettingsView
 from utils.gui_utils import add_button_above_stretch, create_sidebar_button
 
-class WorkoutContainer(QWidget):
+class WorkoutContainer(BaseView):
     def __init__(self, minimap, active_tracker, parent=None):
         super().__init__(parent)
-        
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Add the widgets
         layout.addWidget(minimap, stretch=1)
         layout.addWidget(active_tracker, stretch=3)
-        
-        # Keep a reference to the tracker so we can route the refresh call
         self.active_tracker = active_tracker
 
     def refresh_data(self):
-        # Route the refresh down to the actual active tracker
-        if hasattr(self.active_tracker, 'refresh_data'):
-            self.active_tracker.refresh_data()
+        self.active_tracker.current_user_id = self.current_user_id
+        self.active_tracker.current_program_id = self.current_program_id
+        self.active_tracker.refresh_data()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -109,6 +105,12 @@ class MainWindow(QMainWindow):
         self.user_combo.setStyleSheet("padding: 5px; border-radius: 4px; background: #1e1e1e; color: white;")
         self.user_combo.currentIndexChanged.connect(self._on_user_changed)
         
+        # New user button
+        btn_add_user = QPushButton("+")
+        btn_add_user.setFixedSize(25, 25)
+        btn_add_user.setStyleSheet("background-color: #4CAF50; color: white; border-radius: 4px; font-weight: bold;")
+        btn_add_user.clicked.connect(self._add_new_user)
+
         lbl_program = QLabel("📋 Program:")
         lbl_program.setStyleSheet("color: #b0b0b0; font-weight: bold;")
         self.program_combo = QComboBox()
@@ -117,11 +119,12 @@ class MainWindow(QMainWindow):
         
         switcher_layout.addWidget(lbl_user)
         switcher_layout.addWidget(self.user_combo)
+        switcher_layout.addWidget(btn_add_user)
         switcher_layout.addWidget(lbl_program)
         switcher_layout.addWidget(self.program_combo)
         
         header_layout.addLayout(switcher_layout)
-        header_layout.addStretch() # Pushes the timer to the right
+        header_layout.addStretch()
 
         self.lbl_global_timer = QLabel("No Active Session")
         self.lbl_global_timer.setStyleSheet("font-size: 14px; font-weight: bold; color: #b0b0b0;")
@@ -170,6 +173,18 @@ class MainWindow(QMainWindow):
         if self.program_combo.count() > 0:
             self._on_program_changed(self.program_combo.currentIndex())
             
+    def _add_new_user(self):        
+        username, ok = QInputDialog.getText(self, "New User", "Enter new username:")
+        if ok and username.strip():
+            try:
+                new_id = WorkoutDatabaseManager.create_user(username.strip())
+                self._initialize_context() # Reload dropdowns
+                index = self.user_combo.findData(new_id)
+                if index >= 0:
+                    self.user_combo.setCurrentIndex(index)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not create user: {e}")
+
     def _on_program_changed(self, index):
         user_id = self.user_combo.currentData()
         program_id = self.program_combo.itemData(index)
@@ -277,15 +292,12 @@ class MainWindow(QMainWindow):
         self._next_idx += 1
 
     def _switch_view(self, index: int):
-        """Switches view, highlights nav, and forces a data refresh."""
         self.stacked_widget.setCurrentIndex(index)
         
-        # Highlight active panel
         for i, btn in enumerate(self.nav_buttons):
-            if i == index:
-                btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
-            else:
-                btn.setStyleSheet("")
+            btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;" if i == index else "")
                 
-        # Force refresh data so dropdowns are never blank
-        self._stacked_widget_list[index].refresh_data()
+        # Trigger Lazy Load
+        for i, view in enumerate(self._stacked_widget_list):
+            if hasattr(view, 'set_active_view'):
+                view.set_active_view(i == index)

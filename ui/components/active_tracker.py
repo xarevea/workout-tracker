@@ -1,5 +1,6 @@
 # ui/components/active_tracker.py
 import os
+import time
 from collections import defaultdict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
@@ -20,6 +21,32 @@ from core.events import event_bus
 from modules.progression.engine import ProgressionEngine
 from modules.workout.session import FitbitSyncWorker
 
+class MiniRestTimer(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(140, 140)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
+        
+        self.lbl = QLabel("00:00")
+        self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl.setStyleSheet("color: white; font-size: 32px; font-weight: bold; background-color: rgba(0, 0, 0, 180); border-radius: 70px; border: 4px solid #FF9800;")
+        layout.addWidget(self.lbl)
+        
+        self.oldPos = self.pos()
+
+    def set_time(self, txt):
+        self.lbl.setText(txt)
+
+    def mousePressEvent(self, event):
+        self.oldPos = event.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, event):
+        delta = event.globalPosition().toPoint() - self.oldPos
+        self.move(self.x() + delta.x(), self.y() + delta.y())
+        self.oldPos = event.globalPosition().toPoint()
+
 class ActiveTrackerWidget(QWidget):
     def __init__(self, controller, minimap, global_timer_lbl=None, parent=None):
         super().__init__(parent)
@@ -36,6 +63,8 @@ class ActiveTrackerWidget(QWidget):
         self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
         self.tray.show()
         
+        self.mini_timer = MiniRestTimer()
+
         self._setup_audio()
         self._setup_ui()
         self._setup_timers()
@@ -134,7 +163,12 @@ class ActiveTrackerWidget(QWidget):
         self.btn_skip_rest = QPushButton("Skip Rest")
         self.btn_add_time.clicked.connect(lambda: self._add_rest_time(30))
         self.btn_skip_rest.clicked.connect(self._skip_rest)
+        self.chk_mini_timer = QCheckBox("Show Mini Overlay")
+        self.chk_mini_timer.setStyleSheet("color: #b0b0b0;")
+        self.chk_mini_timer.toggled.connect(lambda checked: self.mini_timer.hide() if not checked else None)
+
         self.rest_layout.addStretch()
+        self.rest_layout.addWidget(self.chk_mini_timer)
         self.rest_layout.addWidget(self.lbl_rest)
         self.rest_layout.addWidget(self.btn_add_time)
         self.rest_layout.addWidget(self.btn_skip_rest)
@@ -279,36 +313,61 @@ class ActiveTrackerWidget(QWidget):
             self.btn_log.setEnabled(False)
 
     def _update_clock(self):
-        if not self.controller.is_active: return
+        if not self.controller.is_active: 
+            return
+
+        if self.controller.start_time:
+            total_secs = int(time.time() - self.controller.start_time)
+            t_mins, t_secs = divmod(total_secs, 60)
+            global_str = f"Total Time: {t_mins:02d}:{t_secs:02d}"
+        else:
+            global_str = "Total Time: 00:00"
+
         if self.rest_seconds > 0:
             self.rest_seconds -= 1
             mins, secs = divmod(self.rest_seconds, 60)
             time_str = f"Resting: {mins:02d}:{secs:02d}"
+            
+            # Show/Update Mini overlay if checked
+            if self.chk_mini_timer.isChecked():
+                if not self.mini_timer.isVisible(): self.mini_timer.show()
+                self.mini_timer.set_time(f"{mins:02d}:{secs:02d}")
+
+            # Update Local Timer
             self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #FF9800;")
-            self.global_timer_lbl.setText(time_str)
-            self.global_timer_lbl.setStyleSheet("color: #FF9800; font-weight: bold; font-size: 18px;")
-            
-            if self.rest_seconds == self.warning_threshold_sec: self._play_sound("tick")
-            elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0: self._play_sound("tick")
+
+            # Update Global Header (Shows both current status AND total time)
+            self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
+            self.global_timer_lbl.setStyleSheet("color: #FF9800; font-weight: bold; font-size: 16px;")
+
+            if self.rest_seconds == self.warning_threshold_sec: 
+                self._play_sound("tick")
+            elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0: 
+                self._play_sound("tick")
             elif self.rest_seconds == 0:
                 self._play_sound("bell")
                 self.tray.showMessage("Rest Complete!", "Time for your next set.", QSystemTrayIcon.MessageIcon.Information, 3000)
                 self._skip_rest() 
         else:
+            self.mini_timer.hide()
             self.workout_seconds += 1
             mins, secs = divmod(self.workout_seconds, 60)
-            time_str = f"Active: {mins:02d}:{secs:02d}"
+            time_str = f"Set Time: {mins:02d}:{secs:02d}"
 
+            # Update Local Timer
             self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #4CAF50;")
-            self.global_timer_lbl.setText(time_str)
-            self.global_timer_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 18px;")
+            
+            # Update Global Header
+            self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
+            self.global_timer_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 16px;")
 
     def _add_rest_time(self, seconds: int): self.rest_seconds += seconds
 
     def _skip_rest(self):
         self.rest_seconds = 0
+        self.workout_seconds = 0
         self.rest_container.hide()
         self.log_group.setEnabled(True)
         self.lbl_timer.setText("00:00")
@@ -356,7 +415,7 @@ class ActiveTrackerWidget(QWidget):
         self.minimap.set_active_node(self.controller.current_exercise_index)
         self.chk_warmup.setChecked(False) 
 
-        loadout = PlateCalculator.calculate_loadout(current_ex['target_weight'])
+        loadout = PlateCalculator.calculate_loadout(current_ex['target_weight'], user_id=self.controller.current_user_id)
         if loadout is not None and len(loadout) > 0:
             self.lbl_loadout.setText(f"Loadout per side: [ {' | '.join([f'{p}lb' for p in loadout])} ]")
         else:
@@ -379,7 +438,7 @@ class ActiveTrackerWidget(QWidget):
     def _on_generate_warmups(self):
         current_ex = self.controller.get_current_exercise()
         if not current_ex: return
-        warmups = PlateCalculator.generate_warmup_sets(current_ex['target_weight'])
+        warmups = PlateCalculator.generate_warmup_sets(current_ex['target_weight'], user_id=self.controller.current_user_id)
         for w in warmups:
             self.controller.log_set(reps=w['reps'], weight=w['weight'], rpe=5, is_warmup=True)
         self._update_display()
@@ -397,9 +456,15 @@ class ActiveTrackerWidget(QWidget):
             self._trigger_workout_review()
         else:
             self._update_display()
-            self.rest_seconds = self.controller.get_current_exercise().get('rest_seconds', 90)
-            self.rest_container.show()
-            self.log_group.setEnabled(False)
+            rest_needed = self.controller.get_current_exercise().get('rest_seconds', 90)
+            
+            # If the exercise has 0 rest, skip the rest UI immediately to reset the set timer
+            if rest_needed > 0:
+                self.rest_seconds = rest_needed
+                self.rest_container.show()
+                self.log_group.setEnabled(False)
+            else:
+                self._skip_rest()
 
     def _trigger_workout_review(self):
         self.timer.stop()
@@ -419,6 +484,7 @@ class ActiveTrackerWidget(QWidget):
             ex_name = ex_dict['name']
             if ex_name in logs_by_ex:
                 eval_result = engine.evaluate_exercise_progression(
+                    user_id=self.controller.current_user_id,
                     target_sets=ex_dict['target_sets'],
                     min_reps=ex_dict['target_reps_min'],
                     max_reps=ex_dict['target_reps_max'],
@@ -447,7 +513,7 @@ class ActiveTrackerWidget(QWidget):
         QThreadPool.globalInstance().start(worker)
         
         # Fire signal to prompt updates
-        event_bus.workout_completed.emit()
+        event_bus.WORKOUT_COMPLETED.emit()
         self._update_display()
 
     def _handle_undo_set(self):
@@ -457,6 +523,8 @@ class ActiveTrackerWidget(QWidget):
                 self.timer.start(1000)
             if hasattr(self, 'btn_log'):
                 self.btn_log.setEnabled(True)
+                
+            self.workout_seconds = 0  # <--- Reset the set timer so you can re-attempt cleanly
             self.rest_container.hide()
             self.log_group.setEnabled(True)
             self._update_display()

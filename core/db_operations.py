@@ -43,10 +43,10 @@ class WorkoutDatabaseManager:
         conn.close()
 
     @staticmethod
-    def get_equipment_inventory() -> dict:
+    def get_equipment_inventory(user_id: int) -> dict:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM equipment")
+        cursor.execute("SELECT * FROM equipment WHERE user_id = ?", (user_id,))
         items = cursor.fetchall()
         conn.close()
         inventory = {'barbell': 45.0, 'plates': []}
@@ -400,12 +400,14 @@ class WorkoutDatabaseManager:
                 
                 cursor.execute("DELETE FROM routine_exercises WHERE template_id = ?", (t_id,))
                 
-                # 3. Insert Exercises (using default target reps if newly added)
+                # 3. Insert Exercises (Using detailed data from the Finalize GUI)
                 for ex in ex_list:
                     cursor.execute('''INSERT INTO routine_exercises 
                                       (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds) 
-                                      VALUES (?, ?, ?, 8, 12, 0.0, 90)''', 
-                                      (t_id, ex['exercise'], ex['sets']))
+                                      VALUES (?, ?, ?, ?, ?, ?, ?)''', 
+                                      (t_id, ex['exercise'], ex.get('sets', 3), 
+                                       ex.get('min_reps', 8), ex.get('max_reps', 12), 
+                                       ex.get('weight', 0.0), ex.get('rest', 90)))
                     
                 # 4. Map Day to Program
                 cursor.execute("INSERT INTO program_days (program_id, day_number, template_id) VALUES (?, ?, ?)", (program_id, day_num, t_id))
@@ -466,3 +468,13 @@ class WorkoutDatabaseManager:
         cursor.execute("DELETE FROM workouts WHERE id = ?", (workout_id,))
         conn.commit()
         conn.close() 
+
+    @staticmethod
+    def create_user(username: str) -> int:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO users (username) VALUES (?)", (username,))
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return user_id

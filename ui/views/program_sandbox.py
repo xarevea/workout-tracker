@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, 
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
     QComboBox, QSpinBox, QSplitter, QListWidget, QAbstractItemView,
-    QListWidgetItem, QMessageBox
+    QListWidgetItem, QMessageBox, QDialog, QDoubleSpinBox
 )
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt
@@ -11,7 +11,94 @@ from core.db_operations import WorkoutDatabaseManager
 from ui.components.body_heatmap import AnatomicalHeatmap, MuscleMapper
 from ui.views.base_view import BaseView
 
+class ProgramScheduleList(QListWidget):
+    """Custom List to handle Drag and Drop from the Exercise Bank."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDropIndicatorShown(True)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+    def dropEvent(self, event):
+        if event.source() != self:
+            # Dropped from Exercise Bank
+            items = event.source().selectedItems()
+            for item in items:
+                ex_name = item.data(Qt.ItemDataRole.UserRole)
+                if not ex_name: ex_name = item.text()
+                
+                drop_row = self.indexAt(event.position().toPoint()).row()
+                if drop_row == -1: drop_row = self.count()
+
+                new_item = QListWidgetItem(ex_name)
+                new_item.setData(Qt.ItemDataRole.UserRole, ex_name)
+                self.insertItem(drop_row, new_item)
+            event.acceptProposedAction()
+            self.window()._trigger_live_feedback()
+        else:
+            # Reordering internally
+            super().dropEvent(event)
+            self.window()._trigger_live_feedback()
+
+class FinalizeProgramDialog(QDialog):
+    """Clean Popup GUI for configuring advanced exercise fields before saving."""
+    def __init__(self, exercises_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Finalize Program Details")
+        self.resize(850, 500)
+        self.layout = QVBoxLayout(self)
+        
+        self.lbl = QLabel("Set your targets for the new program:")
+        self.layout.addWidget(self.lbl)
+
+        self.table = QTableWidget(len(exercises_data), 7)
+        self.table.setHorizontalHeaderLabels(["Day", "Exercise", "Sets", "Min Reps", "Max Reps", "Weight", "Rest (s)"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.layout.addWidget(self.table)
+        
+        for row, ex in enumerate(exercises_data):
+            # Day & Exercise (Read Only)
+            day_item = QTableWidgetItem(ex['day']); day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            ex_item = QTableWidgetItem(ex['name']); ex_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(row, 0, day_item)
+            self.table.setItem(row, 1, ex_item)
+            
+            # Spinboxes
+            spin_sets = QSpinBox(); spin_sets.setValue(3)
+            spin_min = QSpinBox(); spin_min.setValue(8)
+            spin_max = QSpinBox(); spin_max.setValue(12)
+            spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1000); spin_wt.setValue(0.0)
+            spin_rest = QSpinBox(); spin_rest.setRange(0, 600); spin_rest.setSingleStep(15); spin_rest.setValue(90)
+            
+            self.table.setCellWidget(row, 2, spin_sets)
+            self.table.setCellWidget(row, 3, spin_min)
+            self.table.setCellWidget(row, 4, spin_max)
+            self.table.setCellWidget(row, 5, spin_wt)
+            self.table.setCellWidget(row, 6, spin_rest)
+
+        btn_save = QPushButton("Confirm & Save Program")
+        btn_save.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px;")
+        btn_save.clicked.connect(self.accept)
+        self.layout.addWidget(btn_save)
+
+    def get_final_data(self):
+        final_data = []
+        for row in range(self.table.rowCount()):
+            final_data.append({
+                'day': self.table.item(row, 0).text(),
+                'exercise': self.table.item(row, 1).text(),
+                'sets': self.table.cellWidget(row, 2).value(),
+                'min_reps': self.table.cellWidget(row, 3).value(),
+                'max_reps': self.table.cellWidget(row, 4).value(),
+                'weight': self.table.cellWidget(row, 5).value(),
+                'rest': self.table.cellWidget(row, 6).value()
+            })
+        return final_data
+
 class ProgramSandboxView(BaseView):
+    # __init__ and left panel setup remain identical
     def __init__(self, parent=None):
         super().__init__(parent)
         self.all_exercises = []
@@ -19,7 +106,6 @@ class ProgramSandboxView(BaseView):
         self.show_balance_suggestions = False
 
         layout = QHBoxLayout(self)
-        
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         
         self._setup_left_panel()
@@ -27,29 +113,11 @@ class ProgramSandboxView(BaseView):
         self._setup_right_panel()
         
         layout.addWidget(self.splitter)
-        
-        # Default widths (Heatmap : Bank : Schedule)
         self.splitter.setSizes([350, 250, 500])
-        
-        self._load_exercise_bank()
-
-    def refresh_data(self):
-        current_search = self.search_bar.text()
         self._load_exercise_bank()
         
-        # Refresh the Load Program dropdown based on current user
-        self.combo_load_program.blockSignals(True)
-        self.combo_load_program.clear()
-        self.combo_load_program.addItem("-- Create New Program --", userData=None)
-        programs = WorkoutDatabaseManager.get_programs_for_user(self.current_user_id)
-        for p in programs:
-            self.combo_load_program.addItem(p['name'], userData=p['id'])
-        self.combo_load_program.blockSignals(False)
-        
-        if current_search: self._filter_bank(current_search)
-        self._trigger_live_feedback()
-    
     def _setup_left_panel(self):
+        # Unchanged from your original code
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
@@ -72,38 +140,50 @@ class ProgramSandboxView(BaseView):
         
         self.splitter.addWidget(panel)
 
+    def refresh_data(self):
+        current_search = self.search_bar.text()
+        self._load_exercise_bank()
+        
+        self.combo_load_program.blockSignals(True)
+        self.combo_load_program.clear()
+        self.combo_load_program.addItem("-- Create New Program --", userData=None)
+        programs = WorkoutDatabaseManager.get_programs_for_user(self.current_user_id)
+        for p in programs:
+            self.combo_load_program.addItem(p['name'], userData=p['id'])
+        self.combo_load_program.blockSignals(False)
+        
+        self.combo_load_program.setCurrentIndex(0)
+        self._load_existing_program() 
+        
+        if current_search: self._filter_bank(current_search)
+        self._trigger_live_feedback()
+
     def _setup_middle_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.addWidget(QLabel("<b>Exercise Bank</b>"))
         
-        # Bodypart Filter
         self.combo_bodypart = QComboBox()
         self.combo_bodypart.addItems(["All Muscles"] + list(MuscleMapper.REGION_MAP.keys()))
         self.combo_bodypart.currentTextChanged.connect(self._refresh_bank_display)
         layout.addWidget(self.combo_bodypart)
         
-        # Text Search
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Search exercises...")
         self.search_bar.textChanged.connect(self._refresh_bank_display)
         layout.addWidget(self.search_bar)
 
-        # Exercise Suggestions
         self.btn_toggle_balance = QPushButton("🧠 Show Balancing Suggestions")
         self.btn_toggle_balance.setCheckable(True)
         self.btn_toggle_balance.toggled.connect(self._toggle_balance_suggestions)
         layout.addWidget(self.btn_toggle_balance)
         
-        # Exercise List
+        # Configure drag from Bank
         self.exercise_list = QListWidget()
         self.exercise_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.exercise_list.itemDoubleClicked.connect(self._add_to_pool)
+        self.exercise_list.setDragEnabled(True)
+        self.exercise_list.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         layout.addWidget(self.exercise_list)
-        
-        self.btn_add = QPushButton("Add to Program ->")
-        self.btn_add.clicked.connect(self._add_to_pool)
-        layout.addWidget(self.btn_add)
         
         self.splitter.addWidget(panel)
 
@@ -111,7 +191,6 @@ class ProgramSandboxView(BaseView):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         
-        # --- Program Loading Header ---
         header_layout = QHBoxLayout()
         header_layout.addWidget(QLabel("<b>Program Schedule</b>"))
         
@@ -121,30 +200,31 @@ class ProgramSandboxView(BaseView):
         header_layout.addWidget(self.combo_load_program)
         layout.addLayout(header_layout)
         
-        # --- Program Name Editor ---
         self.txt_program_name = QLineEdit()
         self.txt_program_name.setPlaceholderText("Enter Program Name...")
         layout.addWidget(self.txt_program_name)
         
-        # The interactive pool table
-        self.pool_table = QTableWidget(0, 4)
-        self.pool_table.setHorizontalHeaderLabels(["Exercise", "Sets", "Day", "Action"])
-        header = self.pool_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for i in range(1, 4):
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-        layout.addWidget(self.pool_table)
+        # REPLACED TABLE WITH DRAG/DROP LIST WIDGET
+        self.schedule_list = ProgramScheduleList()
+        # Allows double click to delete an exercise from the schedule
+        self.schedule_list.itemDoubleClicked.connect(self._remove_from_schedule) 
+        layout.addWidget(self.schedule_list)
         
         self.lbl_fatigue = QLabel("Daily Volume: Safe")
         self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
         layout.addWidget(self.lbl_fatigue)
         
-        self.btn_save = QPushButton("Save Program")
+        self.btn_save = QPushButton("Configure & Save Program")
         self.btn_save.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
         self.btn_save.clicked.connect(self._save_program)
         layout.addWidget(self.btn_save)
         
         self.splitter.addWidget(panel)
+
+    def _remove_from_schedule(self, item):
+        if not item.data(Qt.ItemDataRole.UserRole + 1):  # Don't delete headers
+            self.schedule_list.takeItem(self.schedule_list.row(item))
+            self._trigger_live_feedback()
 
     def _load_exercise_bank(self):
         self.all_exercises = WorkoutDatabaseManager.get_all_exercises()
@@ -154,39 +234,64 @@ class ProgramSandboxView(BaseView):
 
     def _load_existing_program(self):
         program_id = self.combo_load_program.currentData()
-        self.pool_table.setRowCount(0)
+        self.schedule_list.clear()
         
         if not program_id:
             self.txt_program_name.clear()
+            self._init_empty_days()
             self._trigger_live_feedback()
             return
             
         self.txt_program_name.setText(self.combo_load_program.currentText())
         data = WorkoutDatabaseManager.get_sandbox_program_data(program_id)
         
-        for item in data:
-            row = self.pool_table.rowCount()
-            self.pool_table.insertRow(row)
-            self.pool_table.setItem(row, 0, QTableWidgetItem(item['exercise']))
+        # Group exercises by day
+        day_map = {d: [] for d in ["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"]}
+        for item in data: day_map[item['day']].append(item['exercise'])
             
-            spin_sets = QSpinBox()
-            spin_sets.setRange(1, 10)
-            spin_sets.setValue(item['sets'])
-            spin_sets.valueChanged.connect(self._trigger_live_feedback)
-            self.pool_table.setCellWidget(row, 1, spin_sets)
+        for day, ex_list in day_map.items():
+            # Add Horizontal Separator Header
+            header = QListWidgetItem(f"--- {day} ---")
+            header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setBackground(QColor("#333333"))
+            header.setForeground(QColor("#FF9800"))
+            header.setFlags(header.flags() & ~Qt.ItemFlag.ItemIsDragEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+            header.setData(Qt.ItemDataRole.UserRole + 1, day)
+            self.schedule_list.addItem(header)
             
-            combo_day = QComboBox()
-            combo_day.addItems(["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"])
-            combo_day.setCurrentText(item['day'])
-            combo_day.currentTextChanged.connect(self._trigger_live_feedback)
-            self.pool_table.setCellWidget(row, 2, combo_day)
-            
-            btn_remove = QPushButton("X")
-            btn_remove.setStyleSheet("color: #F44336;")
-            btn_remove.clicked.connect(lambda _, r=row: self._remove_from_pool(r))
-            self.pool_table.setCellWidget(row, 3, btn_remove)
-            
+            for ex in ex_list:
+                item = QListWidgetItem(ex)
+                item.setData(Qt.ItemDataRole.UserRole, ex)
+                self.schedule_list.addItem(item)
+                
         self._trigger_live_feedback()
+
+    def _init_empty_days(self):
+        for day in ["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"]:
+            header = QListWidgetItem(f"--- {day} ---")
+            header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setBackground(QColor("#333333"))
+            header.setForeground(QColor("#FF9800"))
+            header.setFlags(header.flags() & ~Qt.ItemFlag.ItemIsDragEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+            header.setData(Qt.ItemDataRole.UserRole + 1, day)
+            self.schedule_list.addItem(header)
+
+    def _get_current_schedule_data(self):
+        exercises_data = []
+        current_day = "Unassigned"
+        
+        for i in range(self.schedule_list.count()):
+            item = self.schedule_list.item(i)
+            is_header = item.data(Qt.ItemDataRole.UserRole + 1)
+            
+            if is_header:
+                current_day = is_header
+            else:
+                exercises_data.append({
+                    'name': item.data(Qt.ItemDataRole.UserRole),
+                    'day': current_day
+                })
+        return exercises_data
 
     def _save_program(self):
         name = self.txt_program_name.text().strip()
@@ -194,25 +299,23 @@ class ProgramSandboxView(BaseView):
             QMessageBox.warning(self, "Error", "Please enter a program name.")
             return
             
-        pool_data = []
-        for row in range(self.pool_table.rowCount()):
-            if not self.pool_table.item(row, 0): continue
-            pool_data.append({
-                'exercise': self.pool_table.item(row, 0).text(),
-                'sets': self.pool_table.cellWidget(row, 1).value(),
-                'day': self.pool_table.cellWidget(row, 2).currentText()
-            })
-            
-        WorkoutDatabaseManager.save_sandbox_program(
-            user_id=self.current_user_id,
-            program_id=self.combo_load_program.currentData(),
-            program_name=name,
-            pool_data=pool_data
-        )
-        
-        QMessageBox.information(self, "Success", f"Program '{name}' saved successfully!")
-        self.refresh_data()
-    
+        exercises_data = self._get_current_schedule_data()
+        if not exercises_data:
+            QMessageBox.warning(self, "Error", "Your schedule is empty!")
+            return
+
+        dialog = FinalizeProgramDialog(exercises_data, self)
+        if dialog.exec():
+            final_data = dialog.get_final_data()
+            WorkoutDatabaseManager.save_sandbox_program(
+                user_id=self.current_user_id,
+                program_id=self.combo_load_program.currentData(),
+                program_name=name,
+                pool_data=final_data
+            )
+            QMessageBox.information(self, "Success", f"Program '{name}' saved successfully!")
+            self.refresh_data()
+
     def _on_heatmap_clicked(self, muscle_name: str, region_name: str):
         if self.combo_bodypart.findText(region_name) != -1:
             self.combo_bodypart.setCurrentText(region_name)
@@ -225,125 +328,51 @@ class ProgramSandboxView(BaseView):
             self.btn_toggle_balance.setStyleSheet("")
         self._refresh_bank_display()
 
-    def _auto_assign_split(self):
-        for row in range(self.pool_table.rowCount()):
-            name = self.pool_table.item(row, 0).text()
-            ex = next((e for e in self.all_exercises if e['name'] == name), None)
-            if not ex: continue
-            
-            primary = ex['primary_muscle'].lower() if ex['primary_muscle'] else ''
-            combo = self.pool_table.cellWidget(row, 2)
-            
-            if primary in ['chest', 'shoulders', 'triceps']:
-                combo.setCurrentText('Day 1')
-            elif primary in ['latissimus', 'upper-back', 'biceps']:
-                combo.setCurrentText('Day 2')
-            elif primary in ['quadriceps', 'hamstrings', 'glutes', 'calves']:
-                combo.setCurrentText('Day 3')
-            else:
-                combo.setCurrentText('Day 4')
-                
-        self._trigger_live_feedback()
-
     def _filter_bank(self, text):
         for i in range(self.exercise_list.count()):
             item = self.exercise_list.item(i)
             item.setHidden(text.lower() not in item.text().lower())
 
-    def _add_to_pool(self):
-        selected = self.exercise_list.selectedItems()
-        for item in selected:
-            if item.flags() == Qt.ItemFlag.NoItemFlags:
-                continue # Skip headers
-                
-            raw_name = item.data(Qt.ItemDataRole.UserRole)
-            if not raw_name: 
-                raw_name = item.text()
-                
-            row = self.pool_table.rowCount()
-            self.pool_table.insertRow(row)
-            
-            self.pool_table.setItem(row, 0, QTableWidgetItem(raw_name))
-            
-            spin_sets = QSpinBox()
-            spin_sets.setRange(1, 10)
-            spin_sets.setValue(3)
-            spin_sets.valueChanged.connect(self._trigger_live_feedback)
-            self.pool_table.setCellWidget(row, 1, spin_sets)
-            
-            combo_day = QComboBox()
-            combo_day.addItems(["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"])
-            combo_day.currentTextChanged.connect(self._trigger_live_feedback)
-            self.pool_table.setCellWidget(row, 2, combo_day)
-            
-            btn_remove = QPushButton("X")
-            btn_remove.setStyleSheet("color: #F44336;")
-            btn_remove.clicked.connect(lambda _, r=row: self._remove_from_pool(r))
-            self.pool_table.setCellWidget(row, 3, btn_remove)
-            
-        # Calling feedback will automatically hide the newly added item from the bank
-        self._trigger_live_feedback()
-
-    def _remove_from_pool(self, row):
-        self.pool_table.removeRow(row)
-        self._trigger_live_feedback() # This puts item back into the bank
-
     def _refresh_bank_display(self, *args):
         search_text = self.search_bar.text().lower()
         selected_bodypart = self.combo_bodypart.currentText().lower()
         
-        # 1. Get exercises currently in the pool (so we can hide them)
-        pool_exercises = set()
-        for row in range(self.pool_table.rowCount()):
-            if self.pool_table.item(row, 0):
-                pool_exercises.add(self.pool_table.item(row, 0).text())
-                
+        pool_exercises = {ex['name'] for ex in self._get_current_schedule_data()}
         self.exercise_list.clear()
+        
         regular_items = []
         suggested_items = []
         
-        # 2. Filter exercises
         for ex in self.all_exercises:
             name = ex['name']
             primary = ex['primary_muscle'].lower() if ex['primary_muscle'] else ''
             secondary = ex['secondary_muscles'].lower() if ex['secondary_muscles'] else ''
             
-            # Hide if already in pool
             if name in pool_exercises: continue
-            # Hide if it fails text search    
             if search_text and search_text not in name.lower(): continue
                 
-            # Hide if it fails bodypart combobox
             if selected_bodypart != "all muscles":
                 targets = MuscleMapper.REGION_MAP.get(selected_bodypart.capitalize(), [selected_bodypart])
                 if not any(t in primary or t in secondary for t in targets):
                     continue
                     
-            # Sort into 'Suggested' vs 'Regular' based on heatmap analysis
             if self.show_balance_suggestions and primary in self.neglected_muscles:
                 suggested_items.append(name)
             else:
                 regular_items.append(name)
                 
-        # 3. Populate QListWidget with formatting
         if suggested_items:
-            # Create a non-selectable divider
             header = QListWidgetItem("✨ RECOMMENDED TO BALANCE ✨")
-            header.setFlags(Qt.ItemFlag.NoItemFlags)
-            header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            header.setBackground(QColor("#2A1F11"))
-            header.setForeground(QColor("#FF9800"))
+            header.setFlags(Qt.ItemFlag.NoItemFlags); header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setBackground(QColor("#2A1F11")); header.setForeground(QColor("#FF9800"))
             self.exercise_list.addItem(header)
             
             for name in sorted(suggested_items):
                 item = QListWidgetItem(f"⭐ {name}")
-                item.setForeground(QColor("#FF9800"))
-                # Save the real name in UserRole data so the program reads "Pull-ups" not "⭐ Pull-ups"
-                item.setData(Qt.ItemDataRole.UserRole, name) 
+                item.setForeground(QColor("#FF9800")); item.setData(Qt.ItemDataRole.UserRole, name) 
                 self.exercise_list.addItem(item)
                 
-            sep = QListWidgetItem("-" * 30)
-            sep.setFlags(Qt.ItemFlag.NoItemFlags)
+            sep = QListWidgetItem("-" * 30); sep.setFlags(Qt.ItemFlag.NoItemFlags)
             sep.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.exercise_list.addItem(sep)
             
@@ -354,23 +383,20 @@ class ProgramSandboxView(BaseView):
 
     def _trigger_live_feedback(self):
         active_view = self.combo_analysis_view.currentText()
+        schedule_data = self._get_current_schedule_data()
+        
         exercises_data = []
         day_volumes = {}
         active_days = set()
         
-        for row in range(self.pool_table.rowCount()):
-            if not self.pool_table.item(row, 0): continue
-            
-            name = self.pool_table.item(row, 0).text()
-            sets = self.pool_table.cellWidget(row, 1).value()
-            day = self.pool_table.cellWidget(row, 2).currentText()
-            
+        for ex in schedule_data:
+            day = ex['day']
             if day != "Unassigned":
                 active_days.add(day)
-                day_volumes[day] = day_volumes.get(day, 0) + sets
-
+                day_volumes[day] = day_volumes.get(day, 0) + 3 # Assumed 3 sets for live estimate
+            
             if active_view == "Overall Program" or active_view == day:
-                exercises_data.append({'name': name, 'sets': sets})
+                exercises_data.append({'name': ex['name'], 'sets': 3})
 
         current_options = [self.combo_analysis_view.itemText(i) for i in range(self.combo_analysis_view.count())]
         needed_options = ["Overall Program"] + sorted(list(active_days))
@@ -382,11 +408,9 @@ class ProgramSandboxView(BaseView):
                 self.combo_analysis_view.setCurrentText(active_view)
             self.combo_analysis_view.blockSignals(False)
 
-        # 1. Update Heatmap
         volume_map = WorkoutDatabaseManager.calculate_muscle_volume(exercises_data)
         self.heatmap.update_heatmap(volume_map)
         
-        # 2. Check Daily Fatigue
         overloaded_days = [d for d, s in day_volumes.items() if s > 20]
         if overloaded_days:
             self.lbl_fatigue.setText(f"⚠️ High Fatigue: {', '.join(overloaded_days)} exceed 20 sets.")
@@ -395,7 +419,6 @@ class ProgramSandboxView(BaseView):
             self.lbl_fatigue.setText("Daily Volume: Optimal")
             self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
             
-        # 3. Update the Smart Assistant
         if active_view == "Overall Program":
             core_muscles = ["chest", "latissimus", "shoulders", "quadriceps", "hamstrings", "core"]
             self.neglected_muscles = [m for m in core_muscles if volume_map.get(m, 0) < 3]
@@ -413,5 +436,4 @@ class ProgramSandboxView(BaseView):
             self.lbl_assistant.setText(f"<b>{active_view} Stats:</b> {day_volumes.get(active_view, 0)} Total Sets.")
             self.lbl_assistant.setStyleSheet("color: #2196F3;")
 
-        # 4. Trigger bank refresh to apply the new neglect filters and sort to top
         self._refresh_bank_display()

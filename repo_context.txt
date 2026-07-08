@@ -1,0 +1,4120 @@
+========================================
+FILE PATH: code_to_file.py
+========================================
+
+import os
+
+# Configuration: Names of directories or files to skip entirely
+IGNORE_DIRS = {'.git', '.venv', 'env', 'venv', '__pycache__', '.pytest_cache', '.idea', '.vscode'}
+IGNORE_FILES = {'pack_repo.py'}  # Skip this script itself
+
+def pack_python_files(output_filename="repo_context.txt"):
+    """Scans the directory tree, reads all .py files, and combines them into one text file."""
+    root_dir = os.getcwd()
+    
+    with open(output_filename, 'w', encoding='utf-8') as outfile:
+        # Loop through all files and directories
+        for current_dir, dirs, files in os.walk(root_dir):
+            # Modify dirs in-place to skip ignored directories
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+            
+            for file in files:
+                if file.endswith('.py') and file not in IGNORE_FILES:
+                    # Determine paths
+                    full_path = os.path.join(current_dir, file)
+                    relative_path = os.path.relpath(full_path, root_dir)
+                    
+                    try:
+                        with open(full_path, 'r', encoding='utf-8') as infile:
+                            content = infile.read()
+                        
+                        # Write structured headers for AI Studio
+                        outfile.write(f"========================================\n")
+                        outfile.write(f"FILE PATH: {relative_path}\n")
+                        outfile.write(f"========================================\n\n")
+                        outfile.write(content)
+                        outfile.write("\n\n")
+                        print(f"Packed: {relative_path}")
+                        
+                    except Exception as e:
+                        print(f"Error reading {relative_path}: {e}")
+                        
+    print(f"\nSuccess! Full codebase dumped into: {output_filename}")
+
+if __name__ == "__main__":
+    pack_python_files()
+
+
+========================================
+FILE PATH: main.py
+========================================
+
+# main.py
+import sys
+import argparse
+import os
+import atexit
+from PyQt6.QtWidgets import QApplication
+from utils.theme_manager import apply_theme
+import qdarktheme
+
+import core.database
+from core.database import initialize_database
+from ui.main_window import MainWindow
+
+def main():
+    # 1. Parse Command Line Arguments
+    parser = argparse.ArgumentParser(description="Hybrid Tracker App")
+    parser.add_argument('--test', action='store_true', help="Seed the database with mock historical data")
+    args = parser.parse_args()
+    
+    if args.test:
+        test_db_path = os.path.abspath('test_tracker.db')
+        
+        def cleanup_test_db():
+            import gc
+            gc.collect() # Force close dangling SQLite handles
+            if os.path.exists(test_db_path):
+                try:
+                    os.remove(test_db_path)
+                    print("Test database cleaned up.")
+                except Exception as e:
+                    pass
+                    
+        cleanup_test_db() # Clear leftover test DB before start
+        
+        core.database.DB_PATH = test_db_path  # Override the DB path before initialization
+        atexit.register(cleanup_test_db)
+        print(f"Running in TEST mode. Isolated DB: {test_db_path}")
+
+    # 2. Initialize Database
+    initialize_database()
+
+    if args.test:
+        from utils.mock_data import seed_database
+        print("Test flag detected: Seeding mock historical database...")
+        seed_database()
+
+    # 3. Boot UI
+    app = QApplication(sys.argv)
+    qdarktheme.setup_theme(
+        theme="dark",          
+        corner_shape="sharp",  
+        custom_colors={"primary": "#4CAF50"}  
+    )
+
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()
+
+========================================
+FILE PATH: core\database.py
+========================================
+
+# core/database.py
+import sqlite3
+import os
+from contextlib import contextmanager
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tracker.db')
+
+# TASK 2: Safe Database Connections via Context Manager
+@contextmanager
+def get_db_connection():
+    """Use this with 'with' statements for auto commit/rollback and close."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+# Retained to ensure legacy code in db_operations.py doesn't break until updated
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row 
+    return conn
+
+def initialize_database():
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA user_version")
+        version = cursor.fetchone()[0]
+
+        # --- MULTI-USER SUPPORT ---
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users 
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL)''')
+
+        # --- BASE TABLES ---
+        cursor.execute('''CREATE TABLE IF NOT EXISTS bodyweight_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 1 REFERENCES users(id), date TEXT DEFAULT CURRENT_DATE, weight_lbs REAL NOT NULL, notes TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS equipment (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 1 REFERENCES users(id), name TEXT NOT NULL, weight_lbs REAL NOT NULL, quantity INTEGER NOT NULL, is_barbell BOOLEAN DEFAULT 0, UNIQUE(user_id, name))''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS exercises (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, category TEXT NOT NULL, primary_muscle TEXT, secondary_muscles TEXT, cues TEXT, tracks_weight BOOLEAN DEFAULT 1, tracks_time BOOLEAN DEFAULT 0)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS workouts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 1 REFERENCES users(id), date TEXT DEFAULT CURRENT_TIMESTAMP, name TEXT NOT NULL, duration_minutes INTEGER, bodyweight_at_time REAL)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS workout_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, workout_id INTEGER, exercise_id INTEGER, set_number INTEGER, reps INTEGER, weight_lbs REAL, rpe REAL, target_hit BOOLEAN DEFAULT 0, is_warmup BOOLEAN DEFAULT 0, FOREIGN KEY(workout_id) REFERENCES workouts(id), FOREIGN KEY(exercise_id) REFERENCES exercises(id))''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS api_integrations (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_name TEXT NOT NULL UNIQUE, access_token TEXT, refresh_token TEXT, token_expires_at REAL)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS health_metrics (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_DATE, resting_heart_rate INTEGER, sleep_score INTEGER, readiness_score INTEGER, notes TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS routine_templates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, is_active BOOLEAN DEFAULT 0)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS routine_exercises (id INTEGER PRIMARY KEY AUTOINCREMENT, template_id INTEGER, exercise_name TEXT NOT NULL, target_sets INTEGER, target_reps_min INTEGER DEFAULT 8, target_reps_max INTEGER DEFAULT 10, target_weight REAL, rest_seconds INTEGER DEFAULT 90, is_bodyweight BOOLEAN DEFAULT 0, FOREIGN KEY(template_id) REFERENCES routine_templates(id))''')
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS programs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 1 REFERENCES users(id), name TEXT NOT NULL, cycle_length_days INTEGER DEFAULT 7, total_cycles INTEGER DEFAULT 4, is_active BOOLEAN DEFAULT 0)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS program_days (id INTEGER PRIMARY KEY AUTOINCREMENT, program_id INTEGER, day_number INTEGER, template_id INTEGER, is_deload BOOLEAN DEFAULT 0, FOREIGN KEY(program_id) REFERENCES programs(id), FOREIGN KEY(template_id) REFERENCES routine_templates(id))''')
+
+        cursor.execute("INSERT OR IGNORE INTO users (id, username) VALUES (1, 'Default User')")
+
+        # SCHEMA MIGRATIONS
+        if version < 2:
+            print("Applying DB Migration to v2 (Equipment User ID)...")
+            cursor.execute("PRAGMA table_info(equipment)")
+            if "user_id" not in [c['name'] for c in cursor.fetchall()]:
+                cursor.execute("ALTER TABLE equipment ADD COLUMN user_id INTEGER DEFAULT 1 REFERENCES users(id)")
+            cursor.execute("PRAGMA user_version = 2")
+
+        # Auto Load Defaults
+        cursor.execute("SELECT COUNT(*) FROM exercises")
+        if cursor.fetchone()[0] == 0:
+            try:
+                from core.default_data import get_default_exercises
+                exercises = get_default_exercises()
+                for ex in exercises:
+                    cues = ex.get('cues', "1. Focus on form\n2. Maintain tension")
+                    cursor.execute('''INSERT INTO exercises (name, category, primary_muscle, secondary_muscles, cues) VALUES (?, ?, ?, ?, ?)''', (ex['name'], ex.get('category', 'Strength'), ex['primary_muscle'], ex['secondary_muscles'], cues))
+            except ImportError: pass
+
+    print(f"Database successfully verified/initialized at {DB_PATH}")
+    
+def get_default_cues_for(exercise_name):
+    """Helper method to populate initial cues based on name"""
+    if "Bench" in exercise_name:
+        return "1. Pin scapulae\n2. Drive feet\n3. Bend the bar\n4. Push yourself into the bench"
+    if "Squat" in exercise_name:
+        return "1. Brace core\n2. Break at hips and knees\n3. Drive chest up"
+    return "1. Maintain tension\n2. Full range of motion"
+
+if __name__ == "__main__":
+    initialize_database()
+
+========================================
+FILE PATH: core\db_operations.py
+========================================
+
+# core/db_operations.py
+from typing import List, Dict, Optional
+import sqlite3
+
+from core.database import get_connection, get_db_connection
+
+class WorkoutDatabaseManager:
+    # --- UI DECOUPLED METHODS ---
+    @staticmethod
+    def get_all_exercises() -> list:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, primary_muscle, secondary_muscles FROM exercises ORDER BY name ASC")
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def save_routine_exercises(template_id: int, exercises_data: list):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM routine_exercises WHERE template_id = ?", (template_id,))
+        for ex in exercises_data:
+            cursor.execute('''
+                INSERT INTO routine_exercises 
+                (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds, is_bodyweight)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ''', (template_id, ex['name'], ex['sets'], ex['min_reps'], ex['max_reps'], ex['weight'], ex['rest']))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def update_routine_targets(template_id: int, adjustments: dict):
+        conn = get_connection()
+        cursor = conn.cursor()
+        for ex_name, data in adjustments.items():
+            cursor.execute('''
+                UPDATE routine_exercises
+                SET target_weight = ?, target_reps_min = ?, target_reps_max = ?
+                WHERE template_id = ? AND exercise_name = ?
+            ''', (data['weight'], data['min_reps'], data['max_reps'], template_id, ex_name))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def get_equipment_inventory(user_id: int) -> dict:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM equipment WHERE user_id = ?", (user_id,))
+        items = cursor.fetchall()
+        conn.close()
+        inventory = {'barbell': 45.0, 'plates': []}
+        for item in items:
+            if item['is_barbell']: inventory['barbell'] = item['weight_lbs']
+            else: inventory['plates'].extend([item['weight_lbs']] * (item['quantity'] // 2))
+        inventory['plates'].sort(reverse=True)
+        return inventory
+
+    @staticmethod
+    def save_completed_workout(user_id: int, workout_name: str, duration_minutes: int, bodyweight: float, logs: list) -> int:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO workouts (user_id, name, duration_minutes, bodyweight_at_time) VALUES (?, ?, ?, ?)", 
+                       (user_id, workout_name, duration_minutes, bodyweight))
+        workout_id = cursor.lastrowid
+        
+        for log in logs:
+            cursor.execute("SELECT id FROM exercises WHERE name = ?", (log['exercise'],))
+            ex_row = cursor.fetchone()
+            if not ex_row: continue
+            
+            cursor.execute('''
+                INSERT INTO workout_logs (workout_id, exercise_id, set_number, reps, weight_lbs, rpe, is_warmup)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (workout_id, ex_row['id'], log['set'], log['reps'], log['weight'], log['rpe'], log.get('is_warmup', False)))
+            
+        conn.commit()
+        conn.close()
+        return workout_id
+    
+    @staticmethod
+    def get_weekly_tonnage(user_id: int) -> dict:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT 
+                strftime('%W', w.date) as week,
+                SUM(
+                    l.reps * CASE 
+                        WHEN e.category = 'Bodyweight' THEN (w.bodyweight_at_time + l.weight_lbs)
+                        ELSE l.weight_lbs
+                    END
+                ) as total_tonnage
+            FROM workout_logs l
+            JOIN workouts w ON l.workout_id = w.id
+            JOIN exercises e ON l.exercise_id = e.id
+            WHERE w.user_id = ?
+            GROUP BY week
+            ORDER BY week ASC
+        ''', (user_id,))
+        results = cursor.fetchall()
+        conn.close()
+        return {row['week']: row['total_tonnage'] for row in results}
+
+    @staticmethod
+    def get_1rm_trends(user_id: int, exercise_name: str) -> dict:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT w.date, l.weight_lbs, l.reps
+            FROM workout_logs l
+            JOIN workouts w ON l.workout_id = w.id
+            JOIN exercises e ON l.exercise_id = e.id
+            WHERE e.name = ? AND w.user_id = ?
+            ORDER BY w.date ASC
+        ''', (exercise_name, user_id))
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        trends = {}
+        for row in results:
+            date = row['date'].split(' ')[0] 
+            estimated_1rm = row['weight_lbs'] * (1 + (row['reps'] / 30.0))
+            if date not in trends or estimated_1rm > trends[date]:
+                trends[date] = estimated_1rm
+        return trends
+
+    @staticmethod
+    def get_all_workout_dates(user_id: int) -> list:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT date(date) as w_date FROM workouts WHERE user_id = ?", (user_id,))
+        results = [row['w_date'] for row in cursor.fetchall()]
+        conn.close()
+        return results
+
+    @staticmethod
+    def get_tracked_exercises(user_id: int) -> list:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT DISTINCT e.name 
+            FROM exercises e
+            JOIN workout_logs l ON e.id = l.exercise_id
+            JOIN workouts w ON l.workout_id = w.id
+            WHERE w.user_id = ?
+            ORDER BY e.name ASC
+        ''', (user_id,))
+        results = [row['name'] for row in cursor.fetchall()]
+        conn.close()
+        return results
+
+    @staticmethod
+    def get_active_program_volume(user_id: int) -> dict:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT e.primary_muscle, e.secondary_muscles, r.target_sets
+            FROM program_days pd
+            JOIN programs p ON pd.program_id = p.id
+            JOIN routine_exercises r ON pd.template_id = r.template_id
+            JOIN exercises e ON r.exercise_name = e.name
+            WHERE p.user_id = ? AND p.is_active = 1 AND pd.is_deload = 0
+        ''', (user_id,))
+        exercises = cursor.fetchall()
+        conn.close()
+
+        volume_map = {}
+        for ex in exercises:
+            sets = ex['target_sets']
+            pri = ex['primary_muscle']
+            
+            if pri:
+                volume_map[pri] = volume_map.get(pri, 0) + sets
+            if ex['secondary_muscles']:
+                for sec in [s.strip() for s in ex['secondary_muscles'].split(',')]:
+                    volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
+        return volume_map
+
+    @staticmethod
+    def get_routine_exercises(template_id: int) -> list:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT r.exercise_name as name, r.target_sets, r.target_reps_min, r.target_reps_max, 
+                   r.target_weight, r.rest_seconds, e.primary_muscle, e.secondary_muscles, e.cues
+            FROM routine_exercises r
+            JOIN exercises e ON r.exercise_name = e.name
+            WHERE r.template_id = ?
+        ''', (template_id,))
+        exercises = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return exercises
+
+    # --- BODYWEIGHT HUB METHODS ---
+    @staticmethod
+    def log_bodyweight(user_id: int, date_str: str, weight: float):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO bodyweight_log (user_id, date, weight_lbs) VALUES (?, ?, ?)", (user_id, date_str, weight))
+        conn.commit()
+        conn.close()
+        
+    @staticmethod
+    def delete_bodyweight_log(user_id: int, date_str: str):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM bodyweight_log WHERE user_id = ? AND date = ?", (user_id, date_str))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def get_bodyweight_history(user_id: int):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT date, weight_lbs FROM bodyweight_log WHERE user_id = ? ORDER BY date ASC", (user_id,))
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def get_latest_bodyweight(user_id: int) -> float:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT weight_lbs FROM bodyweight_log WHERE user_id = ? ORDER BY date DESC LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row['weight_lbs'] if row else 185.0
+
+    @staticmethod
+    def get_calisthenics_volume_trend(user_id: int):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT date(w.date) as date_val, SUM(l.reps * (w.bodyweight_at_time + l.weight_lbs)) as tonnage
+            FROM workout_logs l
+            JOIN workouts w ON l.workout_id = w.id
+            JOIN exercises e ON l.exercise_id = e.id
+            WHERE e.category = 'Bodyweight' AND l.is_warmup = 0 AND w.user_id = ?
+            GROUP BY date_val ORDER BY date_val ASC
+        ''', (user_id,))
+        res = {row['date_val']: row['tonnage'] for row in cursor.fetchall()}
+        conn.close()
+        return res
+
+    # --- PROGRAM BUILDER METHODS ---
+    @staticmethod
+    def get_all_templates():
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name FROM routine_templates ORDER BY name ASC")
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def save_program(name: str, cycle_length: int, days_data: list):
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("INSERT OR REPLACE INTO programs (name, cycle_length_days) VALUES (?, ?)", (name, cycle_length))
+            cursor.execute("SELECT id FROM programs WHERE name=?", (name,))
+            program_id = cursor.fetchone()['id']
+            
+            cursor.execute("DELETE FROM program_days WHERE program_id=?", (program_id,))
+            for day in days_data:
+                cursor.execute('''
+                    INSERT INTO program_days (program_id, day_number, template_id, is_deload)
+                    VALUES (?, ?, ?, ?)
+                ''', (program_id, day['day_number'], day['template_id'], day['is_deload']))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+            
+    @staticmethod
+    def get_program_volume_map(program_name: str):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT e.primary_muscle, e.secondary_muscles, SUM(r.target_sets * r.target_reps_max) as total_reps
+            FROM program_days pd
+            JOIN programs p ON pd.program_id = p.id
+            JOIN routine_exercises r ON pd.template_id = r.template_id
+            JOIN exercises e ON r.exercise_name = e.name
+            WHERE p.name = ? AND pd.is_deload = 0
+        ''', (program_name,))
+        rows = cursor.fetchall()
+        conn.close()
+        
+        volume_map = {}
+        for row in rows:
+            if not row['primary_muscle']: continue
+            pri = row['primary_muscle']
+            vol = row['total_reps'] or 0
+            volume_map[pri] = volume_map.get(pri, 0) + vol
+            if row['secondary_muscles']:
+                for sec in [s.strip() for s in row['secondary_muscles'].split(',')]:
+                    volume_map[sec] = volume_map.get(sec, 0) + (vol * 0.5)
+        return volume_map
+
+    @staticmethod
+    def calculate_muscle_volume(exercises_data: list) -> dict:
+        if not exercises_data:
+            return {}
+        conn = get_connection()
+        cursor = conn.cursor()
+        volume_map = {}
+        for ex in exercises_data:
+            name = ex.get('name')
+            sets = ex.get('sets', 0)
+            cursor.execute("SELECT primary_muscle, secondary_muscles FROM exercises WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            if row:
+                primary = row['primary_muscle']
+                if primary:
+                    volume_map[primary] = volume_map.get(primary, 0) + sets
+                secondary_str = row['secondary_muscles']
+                if secondary_str:
+                    secondaries = [s.strip() for s in secondary_str.split(',') if s.strip()]
+                    for sec in secondaries:
+                        volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
+        conn.close()
+        return volume_map
+
+    @staticmethod
+    def get_all_users() -> List[Dict]:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, username FROM users ORDER BY id")
+            return [dict(row) for row in cursor.fetchall()]
+
+    @staticmethod
+    def get_programs_for_user(user_id: int) -> List[Dict]:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, is_active FROM programs WHERE user_id = ?", (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    @staticmethod
+    def set_active_program(user_id: int, program_id: int):
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE programs SET is_active = 0 WHERE user_id = ?", (user_id,))
+            if program_id is not None:
+                cursor.execute("UPDATE programs SET is_active = 1 WHERE id = ?", (program_id,))
+
+
+   # --- ADD TO: core/db_operations.py ---
+
+    @staticmethod
+    def get_program_templates(program_id: int) -> list:
+        """Fetches only the routine templates associated with a specific program."""
+        if not program_id: return []
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT t.id, t.name, pd.day_number
+            FROM program_days pd
+            JOIN routine_templates t ON pd.template_id = t.id
+            WHERE pd.program_id = ?
+            ORDER BY pd.day_number ASC
+        ''', (program_id,))
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def save_sandbox_program(user_id: int, program_id: int, program_name: str, pool_data: list):
+        """Creates or overwrites a program and auto-generates daily templates based on the Sandbox UI."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            # 1. Upsert Program
+            if program_id:
+                cursor.execute("UPDATE programs SET name = ? WHERE id = ?", (program_name, program_id))
+            else:
+                cursor.execute("INSERT INTO programs (user_id, name) VALUES (?, ?)", (user_id, program_name))
+                program_id = cursor.lastrowid
+            
+            cursor.execute("DELETE FROM program_days WHERE program_id = ?", (program_id,))
+            
+            from collections import defaultdict
+            days = defaultdict(list)
+            for item in pool_data: days[item['day']].append(item)
+            
+            day_map = {"Day 1": 1, "Day 2": 2, "Day 3": 3, "Day 4": 4, "Day 5": 5, "Day 6": 6, "Day 7": 7}
+            for day_str, ex_list in days.items():
+                if day_str == "Unassigned": continue
+                day_num = day_map.get(day_str, 1)
+                t_name = f"{program_name} - {day_str}"
+                
+                # 2. Upsert Template for this day
+                cursor.execute("INSERT OR IGNORE INTO routine_templates (name, is_active) VALUES (?, 1)", (t_name,))
+                cursor.execute("SELECT id FROM routine_templates WHERE name = ?", (t_name,))
+                t_id = cursor.fetchone()['id']
+                
+                cursor.execute("DELETE FROM routine_exercises WHERE template_id = ?", (t_id,))
+                
+                # 3. Insert Exercises (using default target reps if newly added)
+                for ex in ex_list:
+                    cursor.execute('''INSERT INTO routine_exercises 
+                                      (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds) 
+                                      VALUES (?, ?, ?, 8, 12, 0.0, 90)''', 
+                                      (t_id, ex['exercise'], ex['sets']))
+                    
+                # 4. Map Day to Program
+                cursor.execute("INSERT INTO program_days (program_id, day_number, template_id) VALUES (?, ?, ?)", (program_id, day_num, t_id))
+                
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_sandbox_program_data(program_id: int) -> list:
+        """Loads a program back into the Sandbox editor format."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT pd.day_number, re.exercise_name, re.target_sets
+            FROM program_days pd
+            JOIN routine_templates t ON pd.template_id = t.id
+            JOIN routine_exercises re ON t.id = re.template_id
+            WHERE pd.program_id = ?
+            ORDER BY pd.day_number ASC
+        ''', (program_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [{'day': f"Day {r['day_number']}", 'exercise': r['exercise_name'], 'sets': r['target_sets']} for r in rows]
+
+    @staticmethod
+    def get_workout_history(user_id: int) -> list:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, date, name, duration_minutes FROM workouts WHERE user_id = ? ORDER BY date DESC", (user_id,))
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def get_workout_logs(workout_id: int) -> list:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT l.id, e.name as exercise, l.set_number, l.reps, l.weight_lbs, l.rpe, l.is_warmup
+            FROM workout_logs l
+            JOIN exercises e ON l.exercise_id = e.id
+            WHERE l.workout_id = ?
+            ORDER BY l.id ASC
+        ''', (workout_id,))
+        res = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return res
+
+    @staticmethod
+    def delete_workout(workout_id: int):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM workout_logs WHERE workout_id = ?", (workout_id,))
+        cursor.execute("DELETE FROM workouts WHERE id = ?", (workout_id,))
+        conn.commit()
+        conn.close() 
+
+    @staticmethod
+    def create_user(username: str) -> int:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO users (username) VALUES (?)", (username,))
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return user_id
+
+========================================
+FILE PATH: core\default_data.py
+========================================
+
+# core/default_data.py
+
+def get_default_exercises():
+    """
+    Returns the complete baseline list of exercises loaded when the app runs for the first time.
+    Includes built-in cues for the Active Tracker UI.
+    """
+    return [
+        # --- CALISTHENICS & RINGS ---
+        {
+            "category": "Bodyweight", "name": "Ring Dips", 
+            "primary_muscle": "chest", "secondary_muscles": "triceps, shoulders, core",
+            "cues": "1. Keep rings close to body\n2. Break 90 degrees\n3. Lock out at top and turn rings out"
+        },
+        {
+            "category": "Bodyweight", "name": "Ring Push-ups", 
+            "primary_muscle": "chest", "secondary_muscles": "triceps, shoulders, core",
+            "cues": "1. Maintain hollow body\n2. Rings turned out at top\n3. Full protraction of shoulder blades"
+        },
+        {
+            "category": "Bodyweight", "name": "Pull-ups", 
+            "primary_muscle": "latissimus", "secondary_muscles": "upper-back, biceps, forearms, core",
+            "cues": "1. Hollow body\n2. Pull elbows down and back\n3. Chin clearly over bar"
+        },
+        {
+            "category": "Bodyweight", "name": "Chin-ups", 
+            "primary_muscle": "latissimus", "secondary_muscles": "biceps, upper-back, core",
+            "cues": "1. Supinated (underhand) grip\n2. Drive chest to bar\n3. Squeeze biceps at top"
+        },
+        {
+            "category": "Bodyweight", "name": "Ring Muscle-ups", 
+            "primary_muscle": "latissimus", "secondary_muscles": "upper-back, chest, triceps, shoulders, core",
+            "cues": "1. Deep false grip\n2. Explosive pull to sternum\n3. Aggressive sit-up transition\n4. Keep rings tight to chest"
+        },
+        {
+            "category": "Bodyweight", "name": "Front Lever Holds", 
+            "primary_muscle": "latissimus", "secondary_muscles": "upper-back, core",
+            "cues": "1. Depress and retract scapulae\n2. Keep arms perfectly straight\n3. Squeeze glutes and point toes"
+        },
+        {
+            "category": "Bodyweight", "name": "Planche Progressions", 
+            "primary_muscle": "shoulders", "secondary_muscles": "chest, triceps, core",
+            "cues": "1. Protracted scapulae (hollow back)\n2. Straight arms\n3. Lean forward deeply"
+        },
+        {
+            "category": "Bodyweight", "name": "Wall Handstand Holds", 
+            "primary_muscle": "shoulders", "secondary_muscles": "triceps, upper-back, core",
+            "cues": "1. Push tall through shoulders\n2. Squeeze glutes for hollow body\n3. Look at space between hands"
+        },
+        {
+            "category": "Bodyweight", "name": "Handstand Push-ups", 
+            "primary_muscle": "shoulders", "secondary_muscles": "triceps, upper-back, core",
+            "cues": "1. Create a tripod with head and hands\n2. Control the descent\n3. Press back towards the wall on ascent"
+        },
+        {
+            "category": "Bodyweight", "name": "Pistol Squats", 
+            "primary_muscle": "quadriceps", "secondary_muscles": "glutes, calves, core",
+            "cues": "1. Control the descent\n2. Keep planted heel on floor\n3. Drive up through mid-foot"
+        },
+        {
+            "category": "Bodyweight", "name": "Nordic Curls", 
+            "primary_muscle": "hamstrings", "secondary_muscles": "glutes, calves",
+            "cues": "1. Squeeze glutes to lock hips\n2. Hinge only at knees\n3. Fight the eccentric descent as long as possible"
+        },
+        {
+            "category": "Bodyweight", "name": "L-Sit", 
+            "primary_muscle": "core", "secondary_muscles": "triceps, shoulders, quadriceps",
+            "cues": "1. Push floor away (depress shoulders)\n2. Lock knees straight\n3. Point toes"
+        },
+        {
+            "category": "Bodyweight", "name": "Human Flag", 
+            "primary_muscle": "core", "secondary_muscles": "latissimus, shoulders, obliques",
+            "cues": "1. Push bottom arm, pull top arm\n2. Lock core and obliques tight\n3. Keep a straight line from head to toe"
+        },
+        
+        # --- POWER RACK / BARBELL ---
+        {
+            "category": "Barbell", "name": "Barbell Back Squats", 
+            "primary_muscle": "quadriceps", "secondary_muscles": "glutes, hamstrings, lower-back, core",
+            "cues": "1. Brace core hard\n2. Break at hips and knees simultaneously\n3. Drive chest up out of the hole"
+        },
+        {
+            "category": "Barbell", "name": "Barbell Front Squats", 
+            "primary_muscle": "quadriceps", "secondary_muscles": "glutes, lower-back, core",
+            "cues": "1. Keep elbows high\n2. Maintain an upright torso\n3. Drive through mid-foot"
+        },
+        {
+            "category": "Barbell", "name": "Barbell Bench Press", 
+            "primary_muscle": "chest", "secondary_muscles": "triceps, shoulders",
+            "cues": "1. Pin scapulae together and down\n2. Drive feet into floor\n3. Try to bend the bar\n4. Push yourself into the bench"
+        },
+        {
+            "category": "Barbell", "name": "Incline Bench Press", 
+            "primary_muscle": "chest", "secondary_muscles": "shoulders, triceps",
+            "cues": "1. Maintain slight arch\n2. Touch high on chest\n3. Press back over eyes"
+        },
+        {
+            "category": "Barbell", "name": "Barbell Overhead Press", 
+            "primary_muscle": "shoulders", "secondary_muscles": "triceps, core, upper-back",
+            "cues": "1. Squeeze glutes and brace core\n2. Keep bar path perfectly straight up\n3. Push head through window at the top"
+        },
+        {
+            "category": "Barbell", "name": "Barbell Deadlift", 
+            "primary_muscle": "glutes", "secondary_muscles": "hamstrings, lower-back, quadriceps, upper-back",
+            "cues": "1. Hinge hips back\n2. Drag bar up the shins\n3. Drive the floor away with your legs"
+        },
+        {
+            "category": "Barbell", "name": "Romanian Deadlift (RDL)", 
+            "primary_muscle": "hamstrings", "secondary_muscles": "glutes, lower-back",
+            "cues": "1. Soft knees, do not bend further\n2. Push hips straight back to the wall\n3. Stop when hamstrings are fully stretched"
+        },
+        {
+            "category": "Barbell", "name": "Barbell Rows", 
+            "primary_muscle": "upper-back", "secondary_muscles": "latissimus, biceps, lower-back",
+            "cues": "1. Hinge torso almost parallel to floor\n2. Pull bar to belly button\n3. Squeeze shoulder blades together"
+        },
+        {
+            "category": "Barbell", "name": "Good Mornings", 
+            "primary_muscle": "hamstrings", "secondary_muscles": "glutes, lower-back",
+            "cues": "1. Keep bar low on back\n2. Hinge deeply with straight back\n3. Drive hips forward to stand"
+        },
+        
+        # --- DUMBBELL / ACCESSORY ---
+        {
+            "category": "Dumbell", "name": "Dumbbell Bicep Curls", 
+            "primary_muscle": "biceps", "secondary_muscles": "forearms",
+            "cues": "1. Pin elbows to your sides\n2. Achieve full extension at bottom\n3. Squeeze hard at the top"
+        },
+        {
+            "category": "Dumbell", "name": "Hammer Curls", 
+            "primary_muscle": "biceps", "secondary_muscles": "forearms",
+            "cues": "1. Maintain neutral grip\n2. Use zero momentum\n3. Control the descent"
+        },
+        {
+            "category": "Dumbell", "name": "Overhead Tricep Extensions", 
+            "primary_muscle": "triceps", "secondary_muscles": "",
+            "cues": "1. Keep elbows tucked in\n2. Get a deep stretch at bottom\n3. Lock out fully at the top"
+        },
+        {
+            "category": "Dumbell", "name": "Tricep Pushdowns", 
+            "primary_muscle": "triceps", "secondary_muscles": "",
+            "cues": "1. Keep shoulders locked down\n2. Keep elbows fixed at sides\n3. Spread rope at the very bottom"
+        },
+        {
+            "category": "Dumbell", "name": "Lateral Raises", 
+            "primary_muscle": "shoulders", "secondary_muscles": "",
+            "cues": "1. Slight forward lean\n2. Lead with the pinkies\n3. Control the negative drop"
+        },
+        {
+            "category": "Dumbell", "name": "Calf Raises", 
+            "primary_muscle": "calves", "secondary_muscles": "",
+            "cues": "1. Get a full stretch at the bottom\n2. Explode up onto toes\n3. Hold the top contraction for 1 second"
+        },
+        {
+            "category": "Dumbell", "name": "Hanging Leg Raises", 
+            "primary_muscle": "core", "secondary_muscles": "forearms, quadriceps",
+            "cues": "1. Maintain an active hang\n2. Eliminate all swinging\n3. Pull toes to bar (or 90 degrees)"
+        },
+        {
+            "category": "Dumbell", "name": "Farmer's Walk", 
+            "primary_muscle": "forearms", "secondary_muscles": "core, upper-back, calves",
+            "cues": "1. Chest up, shoulders back\n2. Take short, quick steps\n3. Try to crush the grip handles"
+        }
+    ]
+
+========================================
+FILE PATH: core\events.py
+========================================
+
+# core/events.py
+from PyQt6.QtCore import QObject, pyqtSignal
+
+class EventBus(QObject):
+    # Original Signals
+    data_changed = pyqtSignal()
+    
+    # New Context Switching Signals (Passes an integer ID)
+    USER_CHANGED = pyqtSignal(int)
+    PROGRAM_CHANGED = pyqtSignal(int)
+    
+    # New Workout & Integration Signals
+    WORKOUT_COMPLETED = pyqtSignal(int, list) 
+    FITBIT_SYNC_SUCCESS = pyqtSignal(int, dict)
+    FITBIT_SYNC_FAILED = pyqtSignal(int, str)
+
+# Global Singleton
+event_bus = EventBus()
+
+========================================
+FILE PATH: modules\equipment\plate_calculator.py
+========================================
+
+from core.db_operations import WorkoutDatabaseManager
+
+class PlateCalculator:
+    @staticmethod
+    def calculate_loadout(target_weight: float, user_id: int) -> list:
+        inv = WorkoutDatabaseManager.get_equipment_inventory(user_id)
+        bar = inv['barbell']
+        if target_weight < bar: return []
+            
+        per_side_target = (target_weight - bar) / 2.0
+        loadout = []
+        for plate in inv['plates']:
+            if per_side_target >= plate:
+                loadout.append(plate)
+                per_side_target -= plate
+                
+        return loadout if per_side_target == 0 else None
+
+    @staticmethod
+    def get_closest_valid_weight(target_weight: float, user_id: int) -> float:
+        inv = WorkoutDatabaseManager.get_equipment_inventory(user_id)
+        barbell = inv.get('barbell', 45.0)
+        plates = inv.get('plates', [])
+        
+        if target_weight <= barbell: return barbell
+            
+        possible_weights = {barbell}
+        def find_combinations(index, current_weight):
+            possible_weights.add(current_weight)
+            for i in range(index, len(plates), 2): 
+                find_combinations(i + 2, current_weight + (plates[i] * 2))
+                
+        find_combinations(0, barbell)
+        return min(possible_weights, key=lambda x: abs(x - target_weight))
+
+    @staticmethod
+    def generate_warmup_sets(target_weight: float, user_id: int) -> list:
+        inv = WorkoutDatabaseManager.get_equipment_inventory(user_id)
+        bar = inv.get('barbell', 45.0)
+        if target_weight <= bar:
+            return [{"reps": 10, "weight": bar, "is_warmup": True, "label": "Empty Bar"}]
+            
+        warmups = [{"reps": 10, "weight": bar, "is_warmup": True, "label": "Empty Bar"}]
+        progression = [(0.5, 8, "50%"), (0.7, 5, "70%"), (0.9, 3, "90%")]
+        
+        for percent, reps, label in progression:
+            valid_weight = PlateCalculator.get_closest_valid_weight(target_weight * percent, user_id)
+            if valid_weight > bar and valid_weight not in [w['weight'] for w in warmups]:
+                warmups.append({"reps": reps, "weight": valid_weight, "is_warmup": True, "label": label})
+        return warmups
+
+========================================
+FILE PATH: modules\integrations\fitbit_client.py
+========================================
+
+# modules/integrations/fitbit_client.py
+from modules.integrations.health_provider import HealthProvider
+from typing import Dict
+import time
+
+class FitbitClient(HealthProvider):
+    def __init__(self, client_id: str, client_secret: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.base_url = "https://api.fitbit.com/1/user/-/"
+        # In a full implementation, you'd load existing tokens from your SQLite DB here
+
+    def authenticate(self) -> bool:
+        # TODO: Implement OAuth2.0 authorization code flow
+        print("Authenticating with Fitbit Web API...")
+        return True
+
+    def get_daily_readiness(self, date_str: str) -> Dict[str, any]:
+        # TODO: Make requests.get() call to Fitbit Sleep and Heart Rate endpoints
+        # Mock data for UI testing:
+        return {
+            'sleep_score': 82,
+            'resting_hr': 58,
+            'readiness_score': 90 # High readiness = good day for heavy squats!
+        }
+
+    def get_workout_metrics(self, start_timestamp: float, end_timestamp: float) -> Dict[str, any]:
+        # TODO: Query Fitbit intraday heart rate data for the specific timestamps
+        return {
+            'avg_hr': 135,
+            'max_hr': 168,
+            'calories': 520
+        }
+
+========================================
+FILE PATH: modules\integrations\health_provider.py
+========================================
+
+# modules/integrations/health_provider.py
+from abc import ABC, abstractmethod
+from typing import Dict, Optional
+
+class HealthProvider(ABC):
+    """
+    Abstract base class for all health wearable integrations.
+    Ensures the main app doesn't care if you use Fitbit, Garmin, or Apple.
+    """
+    
+    @abstractmethod
+    def authenticate(self) -> bool:
+        """Handles OAuth or token refreshing."""
+        pass
+
+    @abstractmethod
+    def get_daily_readiness(self, date_str: str) -> Dict[str, any]:
+        """
+        Fetches daily metrics. 
+        Returns dict like: {'sleep_score': 85, 'resting_hr': 55}
+        """
+        pass
+
+    @abstractmethod
+    def get_workout_metrics(self, start_timestamp: float, end_timestamp: float) -> Dict[str, any]:
+        """
+        Fetches specific data for the duration of a workout.
+        Returns dict like: {'avg_hr': 140, 'max_hr': 175, 'calories': 450}
+        """
+        pass
+
+========================================
+FILE PATH: modules\progression\engine.py
+========================================
+
+# modules/progression/engine.py
+from modules.equipment.plate_calculator import PlateCalculator
+
+class ProgressionEngine:
+    def evaluate_exercise_progression(self, user_id: int, target_sets: int, min_reps: int, max_reps: int, current_weight: float, completed_logs: list) -> dict:
+        working_sets = [log for log in completed_logs if not log.get('is_warmup', False)]
+        if not working_sets:
+            return self._maintain_status(current_weight, min_reps, max_reps)
+
+        # 1. Find the best set (Highest e1RM based on RPE formula)
+        # RIR = Reps in Reserve. e.g., RPE 8 = 2 RIR.
+        best_e1rm = 0.0
+        for log in working_sets:
+            rir = 10.0 - log.get('rpe', 10.0)
+            effective_reps = log['reps'] + rir
+            e1rm = log['weight'] * (1 + (effective_reps / 30.0))
+            if e1rm > best_e1rm: best_e1rm = e1rm
+
+        # 2. Calculate ideal weight for the top end of the rep range
+        ideal_target = best_e1rm / (1 + (max_reps / 30.0))
+        
+        # 3. Get achievable equipment weight for this user
+        closest_valid = PlateCalculator.get_closest_valid_weight(ideal_target, user_id)
+
+        # 4. Suggestion Logic
+        if closest_valid >= current_weight + 2.5:
+            return {
+                "action": "INCREASE_WEIGHT (RPE Based)", 
+                "new_weight": closest_valid, 
+                "new_min": min_reps, 
+                "new_max": max_reps
+            }
+        else:
+            return self._maintain_status(current_weight, min_reps, max_reps)
+
+    def _maintain_status(self, current_weight: float, min_reps: int, max_reps: int) -> dict:
+        return {
+            "action": "MAINTAIN", 
+            "new_weight": current_weight, 
+            "new_min": min_reps, 
+            "new_max": max_reps
+        }
+
+========================================
+FILE PATH: modules\workout\session.py
+========================================
+
+# modules/workout/session.py
+import time
+from typing import Dict, Optional
+from PyQt6.QtCore import QRunnable, QThreadPool, pyqtSlot
+
+from core.db_operations import WorkoutDatabaseManager
+from modules.integrations.fitbit_client import FitbitClient
+from core.database import get_connection
+from core.events import event_bus
+
+class FitbitSyncWorker(QRunnable):
+    def __init__(self, workout_id, duration):
+        super().__init__()
+        self.workout_id = workout_id
+        self.duration = duration
+        self.client = FitbitClient(client_id="mock", client_secret="mock")
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            # Silently exit if Fitbit is not actually hooked up
+            # Uncomment authentication check when API is ready
+            if not self.client.authenticate(): return
+            
+            metrics = self.client.get_workout_metrics(self.duration, time.time())
+            if metrics:
+                event_bus.FITBIT_SYNC_SUCCESS.emit({'id': self.workout_id, 'metrics': metrics})
+        except Exception as e:
+            # Handle gracefully without disrupting app
+            print(f"Fitbit Sync Skipped: API not configured ({str(e)})")
+            pass
+
+class WorkoutSessionController:
+    def __init__(self):
+        self.workout_id = None
+        self.current_user_id = 1
+        self.current_program_id = None
+        self.is_active = False
+        self.start_time = 0
+        self.current_exercise_index = 0
+        self.current_set = 1
+        self.exercises = []
+        self.session_logs = []
+        self.template_name = ""
+
+        event_bus.USER_CHANGED.connect(self._update_active_user)
+        event_bus.PROGRAM_CHANGED.connect(self._update_active_program)
+
+    def _update_active_user(self, user_id: int):
+        self.current_user_id = user_id
+
+    def _update_active_program(self, program_id: int):
+        self.current_program_id = program_id
+
+    def undo_last_set(self) -> bool:
+        """Safely rewinds state by recalculating position from remaining logs."""
+        if not self.session_logs:
+            return False 
+            
+        self.session_logs.pop()
+        
+        # Rebuild state machine completely based on remaining valid logs
+        self.current_exercise_index = 0
+        self.current_set = 1
+        
+        for log in self.session_logs:
+            if not log.get('is_warmup', False):
+                if self.current_exercise_index < len(self.exercises):
+                    ex = self.exercises[self.current_exercise_index]
+                    if self.current_set < ex['target_sets']:
+                        self.current_set += 1
+                    else:
+                        self.current_exercise_index += 1
+                        self.current_set = 1
+                        
+        return True
+
+    def load_template(self, template_id: int):
+        self.exercises = WorkoutDatabaseManager.get_routine_exercises(template_id)
+        self.workout_id = template_id
+        self.current_exercise_index = 0
+        self.current_set = 1
+        self.session_logs = []
+        self.is_active = False
+
+    def toggle_workout_state(self):
+        if self.start_time is None or self.start_time == 0: self.start_time = time.time()
+        self.is_active = not self.is_active
+
+    def get_current_exercise(self) -> Dict:
+        if self.current_exercise_index < len(self.exercises): return self.exercises[self.current_exercise_index]
+        return {}
+
+    def log_set(self, reps: int, weight: float, rpe: float, is_warmup: bool = False):
+        exercise = self.get_current_exercise()
+        log_entry = {
+            "exercise": exercise['name'],
+            "set": self.current_set if not is_warmup else "W",
+            "reps": reps,
+            "weight": weight,
+            "rpe": rpe,
+            "timestamp": time.time(),
+            "is_warmup": is_warmup,
+            "target_hit": reps >= exercise['target_reps_min'] if not is_warmup else True
+        }
+        self.session_logs.append(log_entry)
+        
+        if not is_warmup:
+            if reps < exercise['target_reps_min']:
+                new_target = round((weight * 0.9) / 2.5) * 2.5
+                exercise['target_weight'] = new_target
+            
+            if self.current_set < exercise['target_sets']:
+                self.current_set += 1
+            else:
+                self._advance_exercise()
+
+    def _advance_exercise(self):
+        self.current_exercise_index += 1
+        self.current_set = 1
+
+    def finish_workout(self) -> dict:
+        if not self.session_logs: return None
+        self.is_active = False
+        duration_minutes = int((time.time() - self.start_time) / 60.0) if self.start_time else 0
+        return {"duration_minutes": duration_minutes, "logs": self.session_logs}
+
+========================================
+FILE PATH: ui\main_window.py
+========================================
+
+# ui/main_window.py
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
+    QPushButton, QStackedWidget, QLabel, QSystemTrayIcon, QMenu,
+    QComboBox, QInputDialog, QMessageBox
+)
+from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import Qt
+
+from core.events import event_bus
+from modules.workout.session import WorkoutSessionController
+from ui.components.active_tracker import ActiveTrackerWidget
+from ui.components.minimap import WorkoutMinimap
+from ui.views.base_view import BaseView
+from ui.views.bodyweight_hub import BodyweightHubView
+from ui.views.dashboard import DashboardView
+from ui.views.history import WorkoutHistoryView
+from ui.views.program_sandbox import ProgramSandboxView
+from ui.views.routine_builder import RoutineBuilderView
+from ui.views.settings import SettingsView
+from utils.gui_utils import add_button_above_stretch, create_sidebar_button
+
+class WorkoutContainer(BaseView):
+    def __init__(self, minimap, active_tracker, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(minimap, stretch=1)
+        layout.addWidget(active_tracker, stretch=3)
+        self.active_tracker = active_tracker
+
+    def refresh_data(self):
+        self.active_tracker.current_user_id = self.current_user_id
+        self.active_tracker.current_program_id = self.current_program_id
+        self.active_tracker.refresh_data()
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Hybrid Tracker")
+        self.resize(1100, 750)
+
+        # Minimize to System Tray
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+        
+        tray_menu = QMenu()
+        restore_action = QAction("Restore", self)
+        restore_action.triggered.connect(self.showNormal)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self._force_quit)
+        
+        tray_menu.addAction(restore_action)
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+        
+        self._is_force_quit = False
+        
+        # Main widget
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QHBoxLayout(self.central_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+
+        self.nav_buttons = []
+        self._setup_global_header()
+        self._setup_ui()
+
+        self._initialize_context()
+
+    def _force_quit(self):
+        self._is_force_quit = True
+        self.close()
+
+    def closeEvent(self, event):
+        """Intercept the X button to minimize to tray instead."""
+        if not self._is_force_quit:
+            event.ignore()
+            self.hide()
+            self.tray_icon.showMessage(
+                "Workout Active",
+                "App minimized to tray. Your rest timers are still running.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000
+            )
+        else:
+            super().closeEvent(event)
+
+    def _setup_global_header(self):
+        self.header_widget = QWidget()
+        self.header_widget.setStyleSheet("background-color: #2c2c2c; border-bottom: 1px solid #3d3d3d;")
+        header_layout = QHBoxLayout(self.header_widget)
+        header_layout.setContentsMargins(15, 10, 15, 10)
+
+        # --- User & Program Context Switchers ---
+        switcher_layout = QHBoxLayout()
+        switcher_layout.setSpacing(10)
+        
+        lbl_user = QLabel("👤 User:")
+        lbl_user.setStyleSheet("color: #b0b0b0; font-weight: bold;")
+        self.user_combo = QComboBox()
+        self.user_combo.setStyleSheet("padding: 5px; border-radius: 4px; background: #1e1e1e; color: white;")
+        self.user_combo.currentIndexChanged.connect(self._on_user_changed)
+        
+        # New user button
+        btn_add_user = QPushButton("+")
+        btn_add_user.setFixedSize(25, 25)
+        btn_add_user.setStyleSheet("background-color: #4CAF50; color: white; border-radius: 4px; font-weight: bold;")
+        btn_add_user.clicked.connect(self._add_new_user)
+
+        lbl_program = QLabel("📋 Program:")
+        lbl_program.setStyleSheet("color: #b0b0b0; font-weight: bold;")
+        self.program_combo = QComboBox()
+        self.program_combo.setStyleSheet("padding: 5px; border-radius: 4px; background: #1e1e1e; color: white;")
+        self.program_combo.currentIndexChanged.connect(self._on_program_changed)
+        
+        switcher_layout.addWidget(lbl_user)
+        switcher_layout.addWidget(self.user_combo)
+        switcher_layout.addWidget(btn_add_user)
+        switcher_layout.addWidget(lbl_program)
+        switcher_layout.addWidget(self.program_combo)
+        
+        header_layout.addLayout(switcher_layout)
+        header_layout.addStretch()
+
+        self.lbl_global_timer = QLabel("No Active Session")
+        self.lbl_global_timer.setStyleSheet("font-size: 14px; font-weight: bold; color: #b0b0b0;")
+        header_layout.addWidget(self.lbl_global_timer)
+
+    def _initialize_context(self):
+        """Loads users and their programs into the header dropdowns."""
+        self.user_combo.blockSignals(True)
+        self.user_combo.clear()
+        
+        from core.db_operations import WorkoutDatabaseManager
+        users = WorkoutDatabaseManager.get_all_users()
+        
+        for u in users:
+            self.user_combo.addItem(u['username'], u['id'])
+            
+        self.user_combo.blockSignals(False)
+        
+        if self.user_combo.count() > 0:
+            self._on_user_changed(0) 
+            
+    def _on_user_changed(self, index):
+        user_id = self.user_combo.itemData(index)
+        if not user_id: return
+        
+        # CORRECT PyQt6 Event emission
+        event_bus.USER_CHANGED.emit(user_id)
+        
+        self.program_combo.blockSignals(True)
+        self.program_combo.clear()
+        
+        from core.db_operations import WorkoutDatabaseManager
+        programs = WorkoutDatabaseManager.get_programs_for_user(user_id)
+        
+        active_idx = 0
+        for i, p in enumerate(programs):
+            self.program_combo.addItem(p['name'], p['id'])
+            if p['is_active']:
+                active_idx = i
+                
+        if programs:
+            self.program_combo.setCurrentIndex(active_idx)
+            
+        self.program_combo.blockSignals(False)
+        
+        if self.program_combo.count() > 0:
+            self._on_program_changed(self.program_combo.currentIndex())
+            
+    def _add_new_user(self):        
+        username, ok = QInputDialog.getText(self, "New User", "Enter new username:")
+        if ok and username.strip():
+            try:
+                new_id = WorkoutDatabaseManager.create_user(username.strip())
+                self._initialize_context() # Reload dropdowns
+                index = self.user_combo.findData(new_id)
+                if index >= 0:
+                    self.user_combo.setCurrentIndex(index)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not create user: {e}")
+
+    def _on_program_changed(self, index):
+        user_id = self.user_combo.currentData()
+        program_id = self.program_combo.itemData(index)
+        if not program_id or not user_id: return
+        
+        from core.db_operations import WorkoutDatabaseManager
+        WorkoutDatabaseManager.set_active_program(user_id, program_id)
+        
+        # CORRECT PyQt6 Event emission
+        event_bus.PROGRAM_CHANGED.emit(program_id)
+
+    def _setup_ui(self):
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+
+        master_layout = QVBoxLayout(main_widget)
+        master_layout.setContentsMargins(0, 0, 0, 0)
+        master_layout.setSpacing(0)
+
+        master_layout.addWidget(self.header_widget)
+
+        body_widget = QWidget()
+        body_layout = QHBoxLayout(body_widget)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        master_layout.addWidget(body_widget)
+
+        self._setup_sidebar()
+        body_layout.addWidget(self.sidebar)
+
+        self._setup_stacked_views()
+        body_layout.addWidget(self.stacked_widget)
+
+    def _setup_sidebar(self):
+        self.sidebar = QWidget()
+        self.sidebar.setFixedWidth(200)
+        self.sidebar.setStyleSheet("background-color: palette(alternate-base);")
+        
+        self.sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar_layout.setContentsMargins(10, 20, 10, 20)
+        self.sidebar_layout.setSpacing(10)
+
+        logo = QLabel("HYBRID\nTRACKER")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo.setStyleSheet("font-size: 20px; font-weight: 900; margin-bottom: 20px;")
+        self.sidebar_layout.addWidget(logo)
+            
+        self.sidebar_layout.addStretch()
+
+    def _setup_stacked_views(self):
+        self._next_idx = 0
+        self._stacked_widget_list = []
+        self.stacked_widget = QStackedWidget()
+        
+        # 1. Dashboard
+        self.dashboard_view = DashboardView()
+        self._add_stacked_widget(self.dashboard_view, "Dashboard")
+        
+        # 2. Active Workout
+        self.workout_view = QWidget()
+        workout_layout = QHBoxLayout(self.workout_view)
+        
+        self.minimap = WorkoutMinimap()
+        self.session_controller = WorkoutSessionController()
+        
+        self.active_tracker = ActiveTrackerWidget(
+            controller=self.session_controller, 
+            minimap=self.minimap,
+            global_timer_lbl=self.lbl_global_timer,
+        )
+
+        self.workout_container = WorkoutContainer(self.minimap, self.active_tracker)
+        self._add_stacked_widget(self.workout_container, "Active Workout")
+
+        # 3. Unified Program Sandbox (Replaces Routine & Program Builders)
+        self.program_sandbox_view = ProgramSandboxView()
+        self._add_stacked_widget(self.program_sandbox_view, "Program Sandbox")
+        
+        # 4. Workout History
+        self.history_view = WorkoutHistoryView()
+        self._add_stacked_widget(self.history_view, "Workout History")
+        
+        # 5. Bodyweight Hub
+        self.bodyweight_view = BodyweightHubView()
+        self._add_stacked_widget(self.bodyweight_view, "Bodyweight Hub")
+        
+        # 6. Settings
+        self.settings_view = SettingsView()
+        self._add_stacked_widget(self.settings_view, "Settings")
+        
+        self._switch_view(0) # Initialize default view
+
+    def _add_stacked_widget(self, widget_view, btn_name: str):
+        # Add to widgets
+        self._stacked_widget_list.append(widget_view)
+        self.stacked_widget.addWidget(widget_view)
+
+        # Add and connect button
+        this_button = create_sidebar_button(btn_name)
+        this_button.clicked.connect(lambda *args, index=self._next_idx: self._switch_view(index))
+        self.nav_buttons.append(this_button)
+
+        # Add the button above the stretch
+        add_button_above_stretch(self.sidebar_layout, this_button)
+
+        self._next_idx += 1
+
+    def _switch_view(self, index: int):
+        self.stacked_widget.setCurrentIndex(index)
+        
+        for i, btn in enumerate(self.nav_buttons):
+            btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;" if i == index else "")
+                
+        # Trigger Lazy Load
+        for i, view in enumerate(self._stacked_widget_list):
+            if hasattr(view, 'set_active_view'):
+                view.set_active_view(i == index)
+
+========================================
+FILE PATH: ui\components\active_tracker.py
+========================================
+
+# ui/components/active_tracker.py
+import os
+import time
+from collections import defaultdict
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+    QPushButton, QSpinBox, QDoubleSpinBox, QSlider, 
+    QGroupBox, QScrollArea, QComboBox, QCheckBox,
+    QListWidget, QListWidgetItem
+)
+from PyQt6.QtCore import Qt, QTimer, QUrl, QThreadPool
+from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtMultimedia import QSoundEffect
+from PyQt6.QtWidgets import QSystemTrayIcon, QStyle
+
+from ui.components.body_heatmap import AnatomicalHeatmap
+from ui.components.review_dialog import WorkoutReviewDialog
+from modules.equipment.plate_calculator import PlateCalculator
+from core.db_operations import WorkoutDatabaseManager
+from core.events import event_bus
+from modules.progression.engine import ProgressionEngine
+from modules.workout.session import FitbitSyncWorker
+
+class ActiveTrackerWidget(QWidget):
+    def __init__(self, controller, minimap, global_timer_lbl=None, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.minimap = minimap
+        self.global_timer_lbl = global_timer_lbl
+        
+        self.workout_seconds = 0
+        self.rest_seconds = 0
+        self.audio_enabled = True
+        self.warning_threshold_sec = 5 
+        
+        self.tray = QSystemTrayIcon(self)
+        self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        self.tray.show()
+        
+        self._setup_audio()
+        self._setup_ui()
+        self._setup_timers()
+
+    def refresh_data(self):
+        if self.controller.is_active: return 
+
+        self.combo_workout_selector.blockSignals(True)
+        self.combo_workout_selector.clear()
+        
+        templates = WorkoutDatabaseManager.get_program_templates(self.controller.current_program_id)
+        if not templates:
+            self.combo_workout_selector.addItem("-- No Program / Rest Day --")
+        else:
+            for t in templates:
+                self.combo_workout_selector.addItem(f"{t['name']} (Day {t['day_number']})", userData=t['id'])
+                
+        self.combo_workout_selector.blockSignals(False)
+
+        if self.combo_workout_selector.count() > 0 and self.combo_workout_selector.currentData():
+            self._load_selected_workout()
+        else:
+            self.lbl_exercise_name.setText("Select a Program")
+
+    def _load_selected_workout(self):
+        template_id = self.combo_workout_selector.currentData()
+        if template_id:
+            if self.controller.is_active:
+                self._toggle_timer() 
+                
+            self.workout_seconds = 0
+            self.rest_seconds = 0
+            self.lbl_timer.setText("00:00")
+            self.lbl_timer.setStyleSheet("color: white;")
+            self.controller.start_time = 0 
+            
+            self.rest_container.hide()
+            self.log_group.setEnabled(True)
+            self.btn_log.setEnabled(False) # Keep disabled until started
+            
+            self.controller.template_name = self.combo_workout_selector.currentText()
+            self.controller.load_template(template_id)
+            exercise_names = [ex['name'] for ex in self.controller.exercises]
+            
+            self.minimap.load_workout(exercise_names)
+            self._update_display()
+
+    def _setup_audio(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        tick_path = os.path.join(base_dir, '..', '..', 'assets', 'tick.wav')
+        bell_path = os.path.join(base_dir, '..', '..', 'assets', 'bell.wav')
+
+        self.snd_tick = QSoundEffect()
+        if os.path.exists(tick_path):
+            self.snd_tick.setSource(QUrl.fromLocalFile(tick_path))
+            
+        self.snd_bell = QSoundEffect()
+        if os.path.exists(bell_path):
+            self.snd_bell.setSource(QUrl.fromLocalFile(bell_path))
+
+    def _play_sound(self, sound_type: str):
+        if not self.audio_enabled: return
+        if sound_type == "tick" and self.snd_tick.source().isValid(): self.snd_tick.play()
+        elif sound_type == "bell" and self.snd_bell.source().isValid(): self.snd_bell.play()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+
+        workout_select_layout = QHBoxLayout()
+        self.combo_workout_selector = QComboBox()
+        self.combo_workout_selector.currentIndexChanged.connect(self._load_selected_workout)
+        workout_select_layout.addWidget(QLabel("Today's Workout:"))
+        workout_select_layout.addWidget(self.combo_workout_selector, stretch=1)
+        layout.addLayout(workout_select_layout)
+
+        timer_layout = QHBoxLayout()
+        self.lbl_timer = QLabel("00:00")
+        self.lbl_timer.setFont(QFont("Arial", 36, QFont.Weight.Bold))
+        self.btn_play_pause = QPushButton("Start Workout")
+        self.btn_play_pause.setFixedSize(120, 40)
+        self.btn_play_pause.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.btn_play_pause.clicked.connect(self._toggle_timer)
+
+        timer_layout.addWidget(self.btn_play_pause)
+        timer_layout.addStretch()
+        timer_layout.addWidget(self.lbl_timer)
+        timer_layout.addStretch()
+        layout.addLayout(timer_layout)
+
+        self.rest_layout = QHBoxLayout()
+        self.lbl_rest = QLabel("Resting...")
+        self.lbl_rest.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        self.lbl_rest.setStyleSheet("color: #FF9800;")
+        self.btn_add_time = QPushButton("+ 30s")
+        self.btn_skip_rest = QPushButton("Skip Rest")
+        self.btn_add_time.clicked.connect(lambda: self._add_rest_time(30))
+        self.btn_skip_rest.clicked.connect(self._skip_rest)
+        self.rest_layout.addStretch()
+        self.rest_layout.addWidget(self.lbl_rest)
+        self.rest_layout.addWidget(self.btn_add_time)
+        self.rest_layout.addWidget(self.btn_skip_rest)
+        self.rest_layout.addStretch()
+        
+        self.rest_container = QWidget()
+        self.rest_container.setLayout(self.rest_layout)
+        sp = self.rest_container.sizePolicy()
+        sp.setRetainSizeWhenHidden(True)
+        self.rest_container.setSizePolicy(sp)
+        self.rest_container.hide()
+        layout.addWidget(self.rest_container)
+
+        info_layout = QHBoxLayout()
+        text_layout = QVBoxLayout()
+        
+        self.lbl_progress = QLabel("EXERCISE - OF -")
+        self.lbl_progress.setStyleSheet("color: #888888; font-size: 14px; font-weight: bold; letter-spacing: 1px;")
+        
+        self.lbl_exercise_name = QLabel("Select a template...")
+        self.lbl_exercise_name.setFont(QFont("Arial", 24, QFont.Weight.Bold))
+        self.lbl_loadout = QLabel("") 
+        self.lbl_loadout.setStyleSheet("color: #2196F3; font-weight: bold;")
+        self.lbl_set_tracker = QLabel("-")
+
+        self.cues_list = QListWidget()
+        self.cues_list.setStyleSheet("background-color: transparent; border: none; color: #b0b0b0; font-style: italic;")
+        self.cues_list.setMaximumHeight(80)
+        
+        text_layout.addWidget(self.lbl_progress)
+        text_layout.addWidget(self.lbl_exercise_name)
+        text_layout.addWidget(self.cues_list)
+        text_layout.addWidget(self.lbl_loadout)
+        text_layout.addWidget(self.lbl_set_tracker)
+        text_layout.addStretch() 
+        
+        self.exercise_heatmap = AnatomicalHeatmap()
+        
+        info_layout.addLayout(text_layout)
+        info_layout.addWidget(self.exercise_heatmap)
+        info_layout.setStretch(0, 1) 
+        info_layout.setStretch(1, 1) 
+        layout.addLayout(info_layout)
+
+        self.log_group = QGroupBox("Log Current Set")
+        log_layout = QVBoxLayout()
+        input_layout = QHBoxLayout()
+        self.spin_weight = QDoubleSpinBox()
+        self.spin_weight.setRange(0, 1000)
+        self.spin_weight.setSuffix(" lbs")
+        self.spin_weight.setSingleStep(2.5)
+        self.spin_reps = QSpinBox()
+        self.spin_reps.setRange(0, 100)
+        self.spin_reps.setSuffix(" reps")
+
+        self.is_static_mode = False 
+        self.btn_toggle_static = QPushButton("⏱")
+        self.btn_toggle_static.setToolTip("Toggle Reps / Time (s)")
+        self.btn_toggle_static.setFixedWidth(40)
+        self.btn_toggle_static.clicked.connect(self._toggle_static_mode)
+
+        input_layout.addWidget(QLabel("Weight:"))
+        input_layout.addWidget(self.spin_weight)
+        input_layout.addWidget(QLabel("Reps:"))
+        input_layout.addWidget(self.spin_reps)
+
+        self.chk_warmup = QCheckBox("Warm-Up Set")
+        self.chk_warmup.setStyleSheet("color: #FF9800; font-weight: bold;")
+        input_layout.addWidget(self.chk_warmup)
+        
+        self.btn_auto_warmup = QPushButton("Auto Warm-Up")
+        self.btn_auto_warmup.setStyleSheet("color: #FF9800; font-weight: bold;")
+        self.btn_auto_warmup.clicked.connect(self._on_generate_warmups)
+        input_layout.addWidget(self.btn_auto_warmup)
+
+        log_layout.addLayout(input_layout)
+
+        rpe_layout = QHBoxLayout()
+        self.slider_rpe = QSlider(Qt.Orientation.Horizontal)
+        self.slider_rpe.setRange(1, 10)
+        self.slider_rpe.setValue(7)
+        self.slider_rpe.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.lbl_rpe_val = QLabel("RPE: 7")
+        self.slider_rpe.valueChanged.connect(lambda v: self.lbl_rpe_val.setText(f"RPE: {v}"))
+        
+        rpe_layout.addWidget(QLabel("Effort:"))
+        rpe_layout.addWidget(self.slider_rpe)
+        rpe_layout.addWidget(self.lbl_rpe_val)
+        log_layout.addLayout(rpe_layout)
+
+        btn_layout = QHBoxLayout()
+        self.btn_log = QPushButton("Complete Set")
+        self.btn_log.setFixedSize(200, 40)
+        self.btn_log.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        self.btn_log.clicked.connect(self._on_log_set_clicked)
+        self.btn_log.setEnabled(False) 
+
+        self.btn_undo = QPushButton("⟲ Undo Set")
+        self.btn_undo.setStyleSheet("background-color: #555555; color: white;")
+        self.btn_undo.clicked.connect(self._handle_undo_set)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_log)
+        btn_layout.addWidget(self.btn_undo)
+        btn_layout.addStretch()
+        log_layout.addLayout(btn_layout)
+        self.log_group.setLayout(log_layout)
+        layout.addWidget(self.log_group)
+
+        history_box = QGroupBox("Completed Sets History")
+        self.history_layout = QVBoxLayout()
+        self.history_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        history_box.setLayout(self.history_layout)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(history_box)
+        scroll.setMaximumHeight(150)
+        layout.addWidget(scroll)
+
+    def _toggle_static_mode(self):
+        self.is_static_mode = not self.is_static_mode
+        if self.is_static_mode:
+            self.spin_reps.setSuffix(" sec")
+        else:
+            self.spin_reps.setSuffix(" reps")
+    
+    def _setup_timers(self):
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._update_clock)
+        self.timer.start(1000)
+
+    def _toggle_timer(self):
+        self.controller.toggle_workout_state()
+        if self.controller.is_active:
+            self.btn_play_pause.setText("Pause Workout")
+            self.btn_play_pause.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
+            self.btn_log.setEnabled(True)
+            self._update_display()
+        else:
+            self.btn_play_pause.setText("Resume Workout")
+            self.btn_play_pause.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+            self.btn_log.setEnabled(False)
+
+    def _update_clock(self):
+        if not self.controller.is_active: return
+
+        # Calculate the Total Elapsed Workout Time for the Global Header
+        if self.controller.start_time:
+            total_secs = int(time.time() - self.controller.start_time)
+            t_mins, t_secs = divmod(total_secs, 60)
+            global_str = f"Total Time: {t_mins:02d}:{t_secs:02d}"
+        else:
+            global_str = "Total Time: 00:00"
+
+        if self.rest_seconds > 0:
+            self.rest_seconds -= 1
+            mins, secs = divmod(self.rest_seconds, 60)
+            time_str = f"Resting: {mins:02d}:{secs:02d}"
+
+            # Update Local Timer
+            self.lbl_timer.setText(time_str)
+            self.lbl_timer.setStyleSheet("color: #FF9800;")
+
+            # Update Global Header (Shows both current status AND total time)
+            self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
+            self.global_timer_lbl.setStyleSheet("color: #FF9800; font-weight: bold; font-size: 16px;")
+
+            if self.rest_seconds == self.warning_threshold_sec: 
+                self._play_sound("tick")
+            elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0: 
+                self._play_sound("tick")
+            elif self.rest_seconds == 0:
+                self._play_sound("bell")
+                self.tray.showMessage("Rest Complete!", "Time for your next set.", QSystemTrayIcon.MessageIcon.Information, 3000)
+                self._skip_rest() 
+        else:
+            self.workout_seconds += 1
+            mins, secs = divmod(self.workout_seconds, 60)
+            time_str = f"Set Time: {mins:02d}:{secs:02d}"
+
+            # Update Local Timer
+            self.lbl_timer.setText(time_str)
+            self.lbl_timer.setStyleSheet("color: #4CAF50;")
+            
+            # Update Global Header
+            self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
+            self.global_timer_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 16px;")
+
+    def _add_rest_time(self, seconds: int): self.rest_seconds += seconds
+
+    def _skip_rest(self):
+        self.rest_seconds = 0
+        self.workout_seconds = 0
+        self.rest_container.hide()
+        self.log_group.setEnabled(True)
+        self.lbl_timer.setText("00:00")
+        self.lbl_timer.setStyleSheet("color: #4CAF50;")
+
+    def _update_display(self):
+        current_ex = self.controller.get_current_exercise()
+        self.minimap.set_active_node(self.controller.current_exercise_index)
+        for i in reversed(range(self.history_layout.count())): 
+            widget = self.history_layout.itemAt(i).widget()
+            if widget: widget.setParent(None)
+
+        if not current_ex:
+            self.lbl_progress.setText("WORKOUT COMPLETE")
+            self.lbl_exercise_name.setText("Workout Complete!")
+            self.lbl_loadout.setText("")
+            self.lbl_set_tracker.setText("-")
+            self.btn_log.setEnabled(False)
+            self.btn_play_pause.setEnabled(False)
+            self.btn_auto_warmup.setEnabled(False)
+            self.exercise_heatmap.update_heatmap({}) 
+            return
+            
+        self.btn_auto_warmup.setEnabled(True)
+        self.btn_play_pause.setEnabled(True)
+
+        cues_text = current_ex.get('cues')
+        if not cues_text:
+             cues_text = "1. Focus on form\n2. Maintain tension\n3. Full range of motion"
+             
+        self.cues_list.clear()
+        for cue in cues_text.split('\n'):
+            self.cues_list.addItem(QListWidgetItem(cue))
+
+        total_ex = len(self.controller.exercises)
+        current_idx = self.controller.current_exercise_index + 1
+        self.lbl_progress.setText(f"EXERCISE {current_idx} OF {total_ex}")
+
+        self.lbl_exercise_name.setText(current_ex['name'])
+        self.lbl_set_tracker.setText(f"Set {self.controller.current_set} of {current_ex['target_sets']}  |  Target: {current_ex['target_reps_min']} - {current_ex['target_reps_max']} Reps")
+        
+        self.spin_weight.setValue(current_ex['target_weight'])
+        self.spin_reps.setValue(current_ex['target_reps_max'])
+        
+        self.minimap.set_active_node(self.controller.current_exercise_index)
+        self.chk_warmup.setChecked(False) 
+
+        loadout = PlateCalculator.calculate_loadout(current_ex['target_weight'], user_id=self.controller.current_user_id)
+        if loadout is not None and len(loadout) > 0:
+            self.lbl_loadout.setText(f"Loadout per side: [ {' | '.join([f'{p}lb' for p in loadout])} ]")
+        else:
+            self.lbl_loadout.setText("")
+
+        volume_map = {}
+        if current_ex.get('primary_muscle'): volume_map[current_ex['primary_muscle']] = 15 
+        if current_ex.get('secondary_muscles'):
+            for sec in [s.strip() for s in current_ex['secondary_muscles'].split(',')]: volume_map[sec] = 5 
+        self.exercise_heatmap.update_heatmap(volume_map)
+
+        for log in self.controller.session_logs:
+            if log['exercise'] == current_ex['name']:
+                color = "#888888" if log.get('is_warmup') else ("#4CAF50" if log['reps'] >= current_ex['target_reps_min'] else "#F44336")
+                prefix = "Warmup" if log.get('is_warmup') else f"Set {log['set']}"
+                lbl = QLabel(f"{prefix}: {log['reps']} reps @ {log['weight']} lbs | RPE: {log['rpe']}")
+                lbl.setStyleSheet(f"color: {color}; font-weight: bold; padding: 2px;")
+                self.history_layout.addWidget(lbl)
+    
+    def _on_generate_warmups(self):
+        current_ex = self.controller.get_current_exercise()
+        if not current_ex: return
+        warmups = PlateCalculator.generate_warmup_sets(current_ex['target_weight'], user_id=self.controller.current_user_id)
+        for w in warmups:
+            self.controller.log_set(reps=w['reps'], weight=w['weight'], rpe=5, is_warmup=True)
+        self._update_display()
+    
+    def _on_log_set_clicked(self):
+        self.controller.log_set(
+            reps=self.spin_reps.value(),
+            weight=self.spin_weight.value(),
+            rpe=self.slider_rpe.value(),
+            is_warmup=self.chk_warmup.isChecked()
+        )
+        self.slider_rpe.setValue(7)
+        
+        if self.controller.current_exercise_index >= len(self.controller.exercises):
+            self._trigger_workout_review()
+        else:
+            self._update_display()
+            rest_needed = self.controller.get_current_exercise().get('rest_seconds', 90)
+            
+            # If the exercise has 0 rest, skip the rest UI immediately to reset the set timer
+            if rest_needed > 0:
+                self.rest_seconds = rest_needed
+                self.rest_container.show()
+                self.log_group.setEnabled(False)
+            else:
+                self._skip_rest()
+
+    def _trigger_workout_review(self):
+        self.timer.stop()
+        workout_data = self.controller.finish_workout()
+        if not workout_data: return
+
+        self.global_timer_lbl.setText("Workout Complete")
+        self.global_timer_lbl.setStyleSheet("color: #888;")
+        
+        logs_by_ex = defaultdict(list)
+        for log in workout_data['logs']: logs_by_ex[log['exercise']].append(log)
+                    
+        engine = ProgressionEngine()
+        suggestions = {}
+        
+        for ex_dict in self.controller.exercises:
+            ex_name = ex_dict['name']
+            if ex_name in logs_by_ex:
+                eval_result = engine.evaluate_exercise_progression(
+                    user_id=self.controller.current_user_id,
+                    target_sets=ex_dict['target_sets'],
+                    min_reps=ex_dict['target_reps_min'],
+                    max_reps=ex_dict['target_reps_max'],
+                    current_weight=ex_dict['target_weight'],
+                    completed_logs=logs_by_ex[ex_name]
+                )
+                suggestions[ex_name] = eval_result
+
+        current_settings = {ex['name']: {'weight': ex['target_weight'], 'min_reps': ex['target_reps_min'], 'max_reps': ex['target_reps_max']} for ex in self.controller.exercises}
+        dialog = WorkoutReviewDialog(workout_data['logs'], suggestions, current_settings, self)
+        
+        if dialog.exec():
+            WorkoutDatabaseManager.update_routine_targets(self.combo_workout_selector.currentData(), dialog.get_final_targets())
+            
+        latest_bw = WorkoutDatabaseManager.get_latest_bodyweight(self.controller.current_user_id)
+        workout_id = WorkoutDatabaseManager.save_completed_workout(
+            user_id=self.controller.current_user_id,
+            workout_name=self.combo_workout_selector.currentText(),
+            duration_minutes=workout_data['duration_minutes'],
+            bodyweight=latest_bw,
+            logs=workout_data['logs']
+        )
+        self.controller.workout_id = workout_id
+        
+        worker = FitbitSyncWorker(workout_id, workout_data['duration_minutes'])
+        QThreadPool.globalInstance().start(worker)
+        
+        # Fire signal to prompt updates
+        event_bus.WORKOUT_COMPLETED.emit()
+        self._update_display()
+
+    def _handle_undo_set(self):
+        if self.controller.undo_last_set():
+            if not self.controller.is_active and self.btn_play_pause.text() == "Pause Workout":
+                self.controller.is_active = True
+                self.timer.start(1000)
+            if hasattr(self, 'btn_log'):
+                self.btn_log.setEnabled(True)
+                
+            self.workout_seconds = 0  # <--- Reset the set timer so you can re-attempt cleanly
+            self.rest_container.hide()
+            self.log_group.setEnabled(True)
+            self._update_display()
+
+========================================
+FILE PATH: ui\components\body_heatmap.py
+========================================
+
+import json
+import os
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy, 
+)
+from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtGui import QPainter, QImage, QColor
+from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
+
+class AspectRatioSvgWidget(QWidget):
+    """
+    A custom widget that renders SVG data using a QPainter. 
+    Includes exact path click detection via an off-screen color hitmap.
+    """
+    
+    # Signal emitted when a valid path is clicked: (element_id, region)
+    elementClicked = pyqtSignal(str, str) 
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.svg_renderer = QSvgRenderer()
+        self.hitmap_renderer = QSvgRenderer() # Hidden renderer for exact click detection
+        
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(50, 100)
+
+        self._click_map = {}
+        self._color_to_slug = {}
+        self._draw_rect = QRectF()
+
+    def load(self, visual_bytes, hitmap_bytes, color_to_slug):
+        self.svg_renderer.load(visual_bytes)
+        self.hitmap_renderer.load(hitmap_bytes)
+        self._color_to_slug = color_to_slug
+        
+        self.update()
+
+        # Update event handler based on available elements
+        self._click_map.clear()
+        for region, slugs in MuscleMapper.REGION_MAP.items():
+            for element_id in slugs:
+                if self.svg_renderer.elementExists(element_id):
+                    self._click_map[element_id] = region
+
+    def paintEvent(self, event):
+        if not self.svg_renderer.isValid():
+            return
+            
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        viewBox = self.svg_renderer.viewBoxF()
+        if viewBox.isNull():
+            return
+            
+        svg_ratio = viewBox.width() / viewBox.height()
+        widget_ratio = self.width() / self.height()
+        
+        # Calculate maximum centered bounding box that perfectly preserves ratio
+        if widget_ratio > svg_ratio:
+            draw_height = self.height()
+            draw_width = draw_height * svg_ratio
+            x = (self.width() - draw_width) / 2
+            y = 0.0
+        else:
+            draw_width = self.width()
+            draw_height = draw_width / svg_ratio
+            x = 0.0
+            y = (self.height() - draw_height) / 2
+            
+        # Store for hitmap mapping in mousePressEvent
+        self._draw_rect = QRectF(x, y, draw_width, draw_height)
+        self.svg_renderer.render(painter, self._draw_rect)
+
+    def mousePressEvent(self, event):
+        """Detect pixel-perfect click using the hidden hitmap."""
+        if not self.hitmap_renderer.isValid() or self._draw_rect.isNull():
+            return super().mousePressEvent(event)
+
+        pos = event.position()
+        x, y = int(pos.x()), int(pos.y())
+
+        # Render the hitmap into a transparent QImage exactly matching the widget size
+        img = QImage(self.size(), QImage.Format.Format_ARGB32)
+        img.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(img)
+        # CRITICAL: Disable antialiasing so edge pixels don't blend into unknown colors
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False) 
+        self.hitmap_renderer.render(painter, self._draw_rect)
+        painter.end()
+
+        # Check bounds and get pixel color
+        if 0 <= x < img.width() and 0 <= y < img.height():
+            color = img.pixelColor(x, y)
+            
+            # If the pixel isn't fully transparent, we hit a mapped shape
+            if color.alpha() == 255: 
+                hex_color = color.name().upper() # Format: #RRGGBB
+                element_id = self._color_to_slug.get(hex_color)
+                
+                if element_id and element_id in self._click_map:
+                    region = self._click_map[element_id]
+                    self.elementClicked.emit(element_id, region)
+                    
+        super().mousePressEvent(event)
+
+
+class MuscleMapper:
+    # (Unchanged)
+    REGION_MAP = {
+        "Chest": ["chest"],
+        "Back": ["upper-back", "latissimus", "trapezius", "lower-back"],
+        "Core": ["abs", "obliques"],
+        "Arms": ["biceps", "triceps", "forearm"],
+        "Shoulders": ["deltoids"],
+        "Legs": ["quadriceps", "hamstring", "calves", "gluteal", "adductors"],
+    }
+    
+    @staticmethod
+    def get_color(sets: float) -> str:
+        if sets == 0: 
+            return '#333333'      
+        elif sets < 10: 
+            return '#2196F3'
+        elif sets <= 20: 
+            return '#4CAF50'
+        else: 
+            return '#F44336'         
+
+
+class AnatomicalHeatmap(QWidget):
+    
+    # Top-level signal for easy app integration: (element_id, region)
+    regionClicked = pyqtSignal(str, str) 
+
+    def __init__(self, parent=None, data_path='male_model_data.json'):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
+        if os.path.exists(data_path):
+            with open(data_path, 'r', encoding='utf-8') as f:
+                self.model_data = json.load(f)
+        else:
+            self.model_data = {
+                "front": {"border": "", "muscles": {}, "viewBox": "0 0 724 1448"}, 
+                "back": {"border": "", "muscles": {}, "viewBox": "724 0 724 1448"}
+            }
+                
+        svg_layout = QHBoxLayout()
+        
+        # Anterior
+        ant_layout = QVBoxLayout()
+        ant_label = QLabel("Anterior")
+        ant_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ant_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        ant_layout.addWidget(ant_label)
+        self.front_svg = AspectRatioSvgWidget()
+        ant_layout.addWidget(self.front_svg, stretch=1) 
+        
+        # Posterior
+        post_layout = QVBoxLayout()
+        post_label = QLabel("Posterior")
+        post_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        post_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        post_layout.addWidget(post_label)
+        self.back_svg = AspectRatioSvgWidget()
+        post_layout.addWidget(self.back_svg, stretch=1) 
+        
+        svg_layout.addLayout(ant_layout)
+        svg_layout.addLayout(post_layout)
+        self.layout.addLayout(svg_layout)
+
+        # Connect the internal widget signals to the top-level class signal
+        self.front_svg.elementClicked.connect(self.regionClicked.emit)
+        self.back_svg.elementClicked.connect(self.regionClicked.emit)
+
+    def update_heatmap(self, volume_map: dict):
+        slug_volume = {}
+        for key, sets in volume_map.items():
+            key_str = str(key).strip().lower()
+            
+            is_direct_slug = False
+            for region, slugs in MuscleMapper.REGION_MAP.items():
+                if key_str in slugs:
+                    slug_volume[key_str] = slug_volume.get(key_str, 0) + sets
+                    is_direct_slug = True
+                    break
+                    
+            if is_direct_slug:
+                continue
+                
+            matched_group = False
+            for region, slugs in MuscleMapper.REGION_MAP.items():
+                if key_str == region.lower():
+                    for slug in slugs:
+                        slug_volume[slug] = slug_volume.get(slug, 0) + sets
+                    matched_group = True
+                    break
+            
+            if not matched_group:
+                slug_volume[key_str] = slug_volume.get(key_str, 0) + sets
+
+        slug_colors = {slug: MuscleMapper.get_color(sets) for slug, sets in slug_volume.items()}
+
+        # Gather all unique slugs to build a hitmap dictionary
+        all_slugs = set(self.model_data['front']['muscles'].keys()) | set(self.model_data['back']['muscles'].keys())
+        
+        color_to_slug = {}
+        slug_to_hitmap_color = {}
+        
+        for i, slug in enumerate(all_slugs):
+            # Generate a unique hex color for each slug, starting at #000001
+            hex_color = f"#{i+1:06X}" 
+            slug_to_hitmap_color[slug] = hex_color
+            color_to_slug[hex_color] = slug
+
+        # Generate both the visual SVG and hidden hitmap SVG
+        front_vis, front_hit = self._generate_svgs('front', slug_colors, slug_to_hitmap_color)
+        back_vis, back_hit = self._generate_svgs('back', slug_colors, slug_to_hitmap_color)
+        
+        self.front_svg.load(front_vis.encode('utf-8'), front_hit.encode('utf-8'), color_to_slug)
+        self.back_svg.load(back_vis.encode('utf-8'), back_hit.encode('utf-8'), color_to_slug)
+
+    def _generate_svgs(self, side: str, slug_colors: dict, slug_to_hitmap_color: dict):
+        """Returns a tuple of (visual_xml, hitmap_xml)."""
+        data = self.model_data[side]
+        viewBox = data['viewBox']
+        border_path = data['border']
+        muscles = data['muscles']
+        
+        vis_parts = [f'<svg viewBox="{viewBox}" xmlns="http://www.w3.org/2000/svg">']
+        hit_parts = [f'<svg viewBox="{viewBox}" xmlns="http://www.w3.org/2000/svg">']
+
+        for slug, muscle_data in muscles.items():
+            v_color = slug_colors.get(slug, '#333333') 
+            h_color = slug_to_hitmap_color.get(slug, '#FFFFFF')
+            
+            vis_parts.append(f'<g id="{slug}" fill="{v_color}">')
+            hit_parts.append(f'<g id="{slug}" fill="{h_color}">')
+            
+            paths = muscle_data.get('left', []) + muscle_data.get('right', [])
+            for path in paths:
+                path_str = f'  <path d="{path}" />'
+                vis_parts.append(path_str)
+                hit_parts.append(path_str)
+                
+            vis_parts.append('</g>')
+            hit_parts.append('</g>')
+            
+        if border_path:
+            # Only add the border to the visual SVG so it doesn't intercept clicks
+            vis_parts.append(f'<path d="{border_path}" fill="none" stroke="#1c1c1c" stroke-width="2" />')
+            
+        vis_parts.append('</svg>')
+        hit_parts.append('</svg>')
+        
+        return "\n".join(vis_parts), "\n".join(hit_parts)
+
+========================================
+FILE PATH: ui\components\minimap.py
+========================================
+
+# ui/components/minimap.py
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PyQt6.QtCore import Qt
+
+class WorkoutMinimap(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.nodes = []
+
+    def load_workout(self, exercises: list[str]):
+        """Clears old nodes and loads the new exercise list."""
+        # 1. DESTROY OLD WIDGETS (Fixes the duplication bug)
+        for i in reversed(range(self.layout.count())):
+            item = self.layout.itemAt(i)
+            if item.widget():
+                item.widget().setParent(None)
+        
+        self.nodes.clear()
+
+        # 2. POPULATE NEW WIDGETS
+        for i, ex in enumerate(exercises):
+            lbl = QLabel(f"{i+1}. {ex}")
+            lbl.setStyleSheet("color: gray; padding: 5px; font-size: 14px;")
+            self.layout.addWidget(lbl)
+            self.nodes.append(lbl)
+
+    def set_active_node(self, index: int):
+        """Highlights the current exercise and strikes through completed ones."""
+        for i, node in enumerate(self.nodes):
+            if i == index:
+                # Active
+                node.setStyleSheet("color: #4CAF50; font-weight: bold; padding: 5px; background-color: #2d2d2d; border-radius: 5px; font-size: 14px;")
+            elif i < index:
+                # Completed
+                node.setStyleSheet("color: #888888; text-decoration: line-through; padding: 5px; font-size: 14px;")
+            else:
+                # Upcoming
+                node.setStyleSheet("color: white; padding: 5px; font-size: 14px;")
+
+========================================
+FILE PATH: ui\components\muscle_analyzer.py
+========================================
+
+# ui/components/muscle_analyzer.py
+from PyQt6.QtWidgets import QDialog, QVBoxLayout
+import matplotlib
+matplotlib.use('QtAgg')
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import numpy as np
+
+from core.database import get_connection
+
+class MuscleCoverageDialog(QDialog):
+    def __init__(self, template_id, template_name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Muscle Coverage Analysis: {template_name}")
+        self.resize(600, 500)
+        
+        layout = QVBoxLayout(self)
+        
+        self.fig = Figure(figsize=(6, 5), dpi=100)
+        self.fig.patch.set_facecolor('#1e1e1e')
+        self.canvas = FigureCanvas(self.fig)
+        layout.addWidget(self.canvas)
+        
+        self._analyze_coverage(template_id)
+
+    def _analyze_coverage(self, template_id):
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Join the routine layout with the master exercise dictionary
+        cursor.execute('''
+            SELECT r.target_sets, e.primary_muscle, e.secondary_muscles
+            FROM routine_exercises r
+            JOIN exercises e ON r.exercise_name = e.name
+            WHERE r.template_id = ?
+        ''', (template_id,))
+        
+        exercises = cursor.fetchall()
+        conn.close()
+
+        # Tally the volume
+        volume_map = {
+            "Chest": 0, "Back": 0, "Quads": 0, "Hamstrings": 0, 
+            "Calves": 0, "Shoulders": 0, "Biceps": 0, "Triceps": 0, "Core": 0
+        }
+
+        for ex in exercises:
+            sets = ex['target_sets']
+            
+            # Primary gets 1.0x points per set
+            if ex['primary_muscle'] in volume_map:
+                volume_map[ex['primary_muscle']] += sets
+                
+            # Secondaries get 0.5x points per set
+            if ex['secondary_muscles']:
+                secondaries = [s.strip() for s in ex['secondary_muscles'].split(',')]
+                for sec in secondaries:
+                    if sec in volume_map:
+                        volume_map[sec] += (sets * 0.5)
+
+        self._plot_radar_chart(volume_map)
+
+    def _plot_radar_chart(self, volume_map):
+        ax = self.fig.add_subplot(111, polar=True)
+        ax.set_facecolor('#1e1e1e')
+        
+        # Prepare data for Radar Chart
+        categories = list(volume_map.keys())
+        values = list(volume_map.values())
+        
+        # Radar charts require the data to "close the loop"
+        values += values[:1]
+        angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False).tolist()
+        angles += angles[:1]
+
+        # Plotting
+        ax.plot(angles, values, color='#4CAF50', linewidth=2)
+        ax.fill(angles, values, color='#4CAF50', alpha=0.4)
+        
+        # Styling
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(categories, color='white', size=10)
+        ax.tick_params(axis='y', colors='#888888')
+        ax.spines['polar'].set_color('#555555')
+        
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+========================================
+FILE PATH: ui\components\review_dialog.py
+========================================
+
+# ui/components/review_dialog.py
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, 
+    QTableWidgetItem, QHeaderView, QDoubleSpinBox, QSpinBox, QWidget
+)
+from PyQt6.QtCore import Qt
+
+class WorkoutReviewDialog(QDialog):
+    def __init__(self, session_logs, progression_suggestions, current_settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Workout Review & Progression")
+        self.resize(900, 400)
+        self.suggestions = progression_suggestions
+        self.current_settings = current_settings
+        self.final_adjustments = {}
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget(len(self.suggestions), 4)
+        self.table.setHorizontalHeaderLabels(["Exercise", "Current Target", "Engine Suggestion", "Final Decision"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        
+        for row, (exercise_name, data) in enumerate(self.suggestions.items()):
+            self.table.setItem(row, 0, QTableWidgetItem(exercise_name))
+            
+            curr = self.current_settings.get(exercise_name, {})
+            curr_str = f"{curr.get('weight', 0)} lbs @ {curr.get('min_reps', 0)}-{curr.get('max_reps', 0)} reps"
+            self.table.setItem(row, 1, QTableWidgetItem(curr_str))
+
+            sugg_text = f"{data['action']}: {data['new_weight']} lbs @ {data['new_min']}-{data['new_max']} reps"
+            sugg_item = QTableWidgetItem(sugg_text)
+            if "INCREASE" in data['action']:
+                sugg_item.setBackground(Qt.GlobalColor.darkGreen)
+                sugg_item.setForeground(Qt.GlobalColor.white)
+            self.table.setItem(row, 2, sugg_item)
+
+            dec_widget = QWidget()
+            dec_layout = QHBoxLayout(dec_widget)
+            dec_layout.setContentsMargins(0,0,0,0)
+            
+            spin_wt = QDoubleSpinBox()
+            spin_wt.setRange(0, 1500)
+            spin_wt.setValue(data['new_weight'])
+            
+            spin_min = QSpinBox()
+            spin_min.setValue(data['new_min'])
+            
+            spin_max = QSpinBox()
+            spin_max.setValue(data['new_max'])
+            
+            dec_layout.addWidget(spin_wt)
+            dec_layout.addWidget(QLabel("lbs @"))
+            dec_layout.addWidget(spin_min)
+            dec_layout.addWidget(QLabel("-"))
+            dec_layout.addWidget(spin_max)
+            
+            self.table.setCellWidget(row, 3, dec_widget)
+            self.final_adjustments[exercise_name] = {'weight': spin_wt, 'min_reps': spin_min, 'max_reps': spin_max}
+
+        layout.addWidget(self.table)
+        btn_approve = QPushButton("Approve & Update Routine")
+        btn_approve.setStyleSheet("background-color: #4CAF50; color: white; height: 30px;")
+        btn_approve.clicked.connect(self.accept)
+        layout.addWidget(btn_approve)
+
+    def get_final_targets(self):
+        results = {}
+        for exercise, widgets in self.final_adjustments.items():
+            results[exercise] = {
+                'weight': widgets['weight'].value(),
+                'min_reps': widgets['min_reps'].value(),
+                'max_reps': widgets['max_reps'].value()
+            }
+        return results
+
+========================================
+FILE PATH: ui\views\base_view.py
+========================================
+
+# ui/views/base_view.py
+from PyQt6.QtWidgets import QWidget
+from core.events import event_bus
+
+class BaseView(QWidget):
+    """
+    Base view that lazy-loads to prevent UI freezing. 
+    It only queries the database when the tab is actually visible on screen.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_user_id = 1
+        self.current_program_id = None
+        
+        self._is_stale = True
+        self._is_visible = False
+        
+        event_bus.USER_CHANGED.connect(self.on_user_changed)
+        event_bus.PROGRAM_CHANGED.connect(self.on_program_changed)
+
+    def on_user_changed(self, user_id: int):
+        self.current_user_id = user_id
+        self.mark_stale()
+
+    def on_program_changed(self, program_id: int):
+        self.current_program_id = program_id
+        self.mark_stale()
+
+    def mark_stale(self):
+        self._is_stale = True
+        if self._is_visible:
+            self._do_refresh()
+
+    def set_active_view(self, is_active: bool):
+        self._is_visible = is_active
+        if is_active and self._is_stale:
+            self._do_refresh()
+
+    def _do_refresh(self):
+        self._is_stale = False
+        self.refresh_data()
+
+    def refresh_data(self):
+        pass
+
+========================================
+FILE PATH: ui\views\bodyweight_hub.py
+========================================
+
+# ui/views/bodyweight_hub.py
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox, 
+    QCalendarWidget, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView
+)
+from core.db_operations import WorkoutDatabaseManager
+from ui.views.base_view import BaseView
+
+class BodyweightHubView(BaseView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        
+        # --- LEFT: Logger ---
+        left = QVBoxLayout()
+        title = QLabel("Bodyweight Hub")
+        title.setStyleSheet("font-size: 24px; font-weight: bold;")
+        left.addWidget(title)
+        
+        self.calendar = QCalendarWidget()
+        self.calendar.setStyleSheet("background-color: #2d2d2d; color: white;")
+        left.addWidget(self.calendar)
+        
+        input_layout = QHBoxLayout()
+        self.spin_weight = QDoubleSpinBox()
+        self.spin_weight.setRange(50, 500)
+        self.spin_weight.setValue(180.0)
+        self.spin_weight.setSuffix(" lbs")
+        self.spin_weight.setStyleSheet("font-size: 18px; padding: 5px;")
+        
+        self.btn_log = QPushButton("Log Morning Weight")
+        self.btn_log.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 5px;")
+        self.btn_log.clicked.connect(self._log_weight)
+        
+        input_layout.addWidget(self.spin_weight)
+        input_layout.addWidget(self.btn_log)
+        left.addLayout(input_layout)
+        left.addStretch()
+        layout.addLayout(left, stretch=1)
+        
+        # --- RIGHT: History ---
+        right = QVBoxLayout()
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Date Recorded", "Morning Weight (lbs)"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+        
+        right.addWidget(self.table)
+        layout.addLayout(right, stretch=1)
+        
+        self.refresh_data()
+
+    def _show_context_menu(self, pos):
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu()
+        delete_action = menu.addAction("Delete Entry")
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        
+        if action == delete_action:
+            row = self.table.rowAt(pos.y())
+            if row >= 0:
+                date_str = self.table.item(row, 0).text()
+                WorkoutDatabaseManager.delete_bodyweight_log(self.current_user_id, date_str)
+                self.refresh_data()
+
+    def refresh_data(self):
+        self.table.setRowCount(0)
+        logs = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id)
+        for i, log in enumerate(reversed(logs)): # Show newest first
+            self.table.insertRow(i)
+            self.table.setItem(i, 0, QTableWidgetItem(log['date']))
+            self.table.setItem(i, 1, QTableWidgetItem(str(log['weight_lbs'])))
+            
+    def _log_weight(self):
+        date_str = self.calendar.selectedDate().toString("yyyy-MM-dd")
+        WorkoutDatabaseManager.log_bodyweight(self.current_user_id, date_str, self.spin_weight.value())
+        self.refresh_data()
+
+========================================
+FILE PATH: ui\views\dashboard.py
+========================================
+
+# ui/views/dashboard.py
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCalendarWidget
+from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtGui import QTextCharFormat, QColor
+
+import matplotlib
+matplotlib.use('QtAgg')
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import numpy as np
+
+from core.db_operations import WorkoutDatabaseManager
+from ui.components.body_heatmap import AnatomicalHeatmap
+from ui.views.base_view import BaseView
+from core.events import event_bus
+
+class DashboardView(BaseView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        event_bus.WORKOUT_COMPLETED.connect(self.refresh_data) # Live redraw after review dialog
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(20, 20, 20, 20)
+
+        # --- TOP SECTION: Title, Calendar, Heatmap ---
+        top_layout = QHBoxLayout()
+        
+        left_top_layout = QVBoxLayout()
+        title = QLabel("Performance Dashboard")
+        title.setStyleSheet("font-size: 24px; font-weight: bold;")
+        left_top_layout.addWidget(title)
+        
+        self.calendar = QCalendarWidget()
+        self.calendar.setFixedSize(350, 200)
+        self.calendar.setStyleSheet("background-color: #2d2d2d; color: white;")
+        left_top_layout.addWidget(self.calendar)
+        top_layout.addLayout(left_top_layout)
+
+        self.heatmap = AnatomicalHeatmap()
+        top_layout.addWidget(self.heatmap, stretch=1)
+        
+        self.layout.addLayout(top_layout)
+
+        # --- MIDDLE SECTION: Controls ---
+        control_layout = QHBoxLayout()
+        control_layout.addWidget(QLabel("Select Exercise to Analyze:"))
+        
+        self.exercise_dropdown = QComboBox()
+        self.exercise_dropdown.currentTextChanged.connect(self._plot_trend_data)
+        control_layout.addWidget(self.exercise_dropdown)
+        control_layout.addStretch()
+        self.layout.addLayout(control_layout)
+
+        # --- BOTTOM SECTION: Matplotlib Canvas ---
+        self.fig = Figure(figsize=(8, 4), dpi=100)
+        self.fig.patch.set_facecolor('#1e1e1e')
+        self.canvas = FigureCanvas(self.fig)
+        self.layout.addWidget(self.canvas)
+        self.ax = self.fig.add_subplot(111)
+
+    def refresh_data(self):
+        self._highlight_calendar_dates()
+        volume_map = WorkoutDatabaseManager.get_active_program_volume(self.current_user_id)
+        self.heatmap.update_heatmap(volume_map)
+        
+        exercises = WorkoutDatabaseManager.get_tracked_exercises(self.current_user_id)
+        self.exercise_dropdown.blockSignals(True)
+        self.exercise_dropdown.clear()
+        
+        self.exercise_dropdown.addItem("Overview: Weight Loss vs. Calisthenics Strength")
+        self.exercise_dropdown.addItems(exercises)
+        self.exercise_dropdown.blockSignals(False)
+        self._plot_trend_data(self.exercise_dropdown.currentText())
+
+    def _highlight_calendar_dates(self):
+        dates = WorkoutDatabaseManager.get_all_workout_dates(self.current_user_id)
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor("#4CAF50"))
+        fmt.setForeground(QColor("white"))
+        fmt.setFontWeight(75)
+
+        self.calendar.setDateTextFormat(QDate(), QTextCharFormat()) 
+        for date_str in dates:
+            y, m, d = map(int, date_str.split('-'))
+            qdate = QDate(y, m, d)
+            self.calendar.setDateTextFormat(qdate, fmt)
+
+    def _plot_trend_data(self, selection: str):
+        self.fig.clear()
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor('#1e1e1e')
+        self.fig.patch.set_facecolor('#1e1e1e')
+        
+        if selection == "Overview: Weight Loss vs. Calisthenics Strength":
+            self._plot_bw_vs_calisthenics()
+        else:
+            self._plot_1rm_standard(selection) 
+
+    def _plot_bw_vs_calisthenics(self):
+        import numpy as np
+        bw_data = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id) 
+        cal_data = WorkoutDatabaseManager.get_calisthenics_volume_trend(self.current_user_id) 
+
+        if not bw_data and not cal_data:
+            self.canvas.draw(); return
+            
+        all_dates = sorted(list(set([d['date'] for d in bw_data] + list(cal_data.keys()))))
+        x_numeric = np.arange(len(all_dates))
+        
+        bw_y = []
+        last_bw = bw_data[0]['weight_lbs'] if bw_data else 180
+        bw_dict = {d['date']: d['weight_lbs'] for d in bw_data}
+        for d in all_dates:
+            last_bw = bw_dict.get(d, last_bw)
+            bw_y.append(last_bw)
+
+        cal_y = [cal_data.get(d, 0) for d in all_dates]
+
+        self.ax.plot(x_numeric, bw_y, color='#FF9800', marker='o', label='Bodyweight', linewidth=2)
+        self.ax.set_ylabel("Morning Bodyweight (lbs)", color='#FF9800')
+        self.ax.tick_params(axis='y', labelcolor='#FF9800')
+        self.ax.tick_params(axis='x', colors='white')
+        
+        ax2 = self.ax.twinx()
+        ax2.bar(x_numeric, cal_y, color='#2196F3', alpha=0.5, label='Calisthenics Tonnage')
+        ax2.set_ylabel("Total Tonnage (lbs)", color='#2196F3')
+        ax2.tick_params(axis='y', labelcolor='#2196F3')
+        
+        self.ax.set_title("Mathematical Proof: Weight Loss Driving Relative Strength", color='white', pad=15)
+        self.ax.set_xticks(x_numeric)
+        self.ax.set_xticklabels(all_dates, rotation=45)
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+    def _plot_1rm_standard(self, exercise_name: str):
+        if not exercise_name: return
+        
+        self.ax.clear()
+        self.ax.set_facecolor('#1e1e1e')
+        
+        self.ax.tick_params(axis='both', colors='white', labelcolor='white')
+        self.ax.xaxis.label.set_color('white')
+        self.ax.yaxis.label.set_color('white')
+        for spine in self.ax.spines.values(): spine.set_edgecolor('#555555')
+
+        data = WorkoutDatabaseManager.get_1rm_trends(self.current_user_id, exercise_name)
+        if not data:
+            self.canvas.draw()
+            return
+
+        dates = list(data.keys())
+        weights = list(data.values())
+        x_numeric = np.arange(len(dates))
+        
+        self.ax.plot(x_numeric, weights, marker='o', color='#2196F3', label='Actual 1RM', linewidth=2, markersize=8)
+
+        if len(weights) > 1:
+            m, b = np.polyfit(x_numeric, weights, 1)
+            x_future = np.arange(len(dates) + 2)
+            y_pred = m * x_future + b
+            self.ax.plot(x_future, y_pred, linestyle='--', color='#FF9800', label='Predicted Trend')
+
+        self.ax.set_title(f"Strength Progression: {exercise_name}", color='white', pad=15)
+        self.ax.set_ylabel("Estimated 1RM (lbs)", color='white')
+        self.ax.set_xticks(x_numeric)
+        self.ax.set_xticklabels(dates, rotation=45, color='white')
+        
+        legend = self.ax.legend(facecolor='#2d2d2d', edgecolor='#555555')
+        for text in legend.get_texts(): text.set_color("white")
+
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+========================================
+FILE PATH: ui\views\history.py
+========================================
+
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget, 
+    QTableWidgetItem, QHeaderView, QPushButton, QMessageBox, QSplitter,
+    QDialog, QLineEdit, QDateEdit, QSpinBox, QComboBox, QDoubleSpinBox
+)
+from PyQt6.QtCore import Qt, QDate
+from core.db_operations import WorkoutDatabaseManager
+from ui.views.base_view import BaseView
+from core.events import event_bus
+
+class ManualWorkoutEntryDialog(QDialog):
+    def __init__(self, user_id, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.setWindowTitle("Log Past Workout")
+        self.resize(700, 500)
+        layout = QVBoxLayout(self)
+
+        # Header Info
+        header = QHBoxLayout()
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDate(QDate.currentDate())
+        
+        self.txt_name = QLineEdit()
+        self.txt_name.setPlaceholderText("Workout Name (e.g. Pull Day)")
+        
+        self.spin_dur = QSpinBox(); self.spin_dur.setSuffix(" min"); self.spin_dur.setValue(60)
+        self.spin_bw = QDoubleSpinBox(); self.spin_bw.setSuffix(" lbs"); self.spin_bw.setRange(50, 500)
+        self.spin_bw.setValue(WorkoutDatabaseManager.get_latest_bodyweight(user_id))
+
+        header.addWidget(QLabel("Date:")); header.addWidget(self.date_edit)
+        header.addWidget(self.txt_name)
+        header.addWidget(QLabel("Duration:")); header.addWidget(self.spin_dur)
+        header.addWidget(QLabel("Bodyweight:")); header.addWidget(self.spin_bw)
+        layout.addLayout(header)
+
+        # Log Table
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Exercise", "Set", "Reps", "Weight", "RPE", ""])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+
+        # Controls
+        controls = QHBoxLayout()
+        btn_add_row = QPushButton("+ Add Set")
+        btn_add_row.clicked.connect(self._add_row)
+        btn_save = QPushButton("Save History")
+        btn_save.setStyleSheet("background-color: #4CAF50; color: white;")
+        btn_save.clicked.connect(self._save)
+        
+        controls.addWidget(btn_add_row)
+        controls.addStretch()
+        controls.addWidget(btn_save)
+        layout.addLayout(controls)
+
+        self.exercise_bank = [ex['name'] for ex in WorkoutDatabaseManager.get_all_exercises()]
+        self._add_row() # Initial empty row
+
+    def _add_row(self):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        
+        combo_ex = QComboBox(); combo_ex.addItems(self.exercise_bank); combo_ex.setEditable(True)
+        spin_set = QSpinBox(); spin_set.setValue(1)
+        spin_reps = QSpinBox(); spin_reps.setValue(10)
+        spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1500)
+        spin_rpe = QDoubleSpinBox(); spin_rpe.setRange(1, 10); spin_rpe.setValue(8)
+        
+        btn_del = QPushButton("X"); btn_del.setStyleSheet("color: red;")
+        btn_del.clicked.connect(lambda: self.table.removeRow(self.table.indexAt(btn_del.pos()).row()))
+        
+        self.table.setCellWidget(row, 0, combo_ex)
+        self.table.setCellWidget(row, 1, spin_set)
+        self.table.setCellWidget(row, 2, spin_reps)
+        self.table.setCellWidget(row, 3, spin_wt)
+        self.table.setCellWidget(row, 4, spin_rpe)
+        self.table.setCellWidget(row, 5, btn_del)
+
+    def _save(self):
+        if not self.txt_name.text().strip():
+            QMessageBox.warning(self, "Error", "Name is required.")
+            return
+
+        logs = []
+        for i in range(self.table.rowCount()):
+            logs.append({
+                "exercise": self.table.cellWidget(i, 0).currentText(),
+                "set": self.table.cellWidget(i, 1).value(),
+                "reps": self.table.cellWidget(i, 2).value(),
+                "weight": self.table.cellWidget(i, 3).value(),
+                "rpe": self.table.cellWidget(i, 4).value(),
+                "is_warmup": False
+            })
+            
+        WorkoutDatabaseManager.save_completed_workout(
+            user_id=self.user_id,
+            workout_name=self.txt_name.text(),
+            duration_minutes=self.spin_dur.value(),
+            bodyweight=self.spin_bw.value(),
+            logs=logs
+        )
+        
+        # Override the saved timestamp to match the selected DateEdit
+        # (A slight hack, but keeps db_operations clean)
+        date_str = self.date_edit.date().toString("yyyy-MM-dd") + " 12:00:00"
+        conn = get_connection()
+        conn.execute("UPDATE workouts SET date = ? WHERE id = (SELECT MAX(id) FROM workouts)", (date_str,))
+        conn.commit(); conn.close()
+        
+        self.accept()
+     
+
+class WorkoutHistoryView(BaseView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        event_bus.WORKOUT_COMPLETED.connect(self.refresh_data)
+        
+        layout = QHBoxLayout(self)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # --- LEFT: Workout List ---
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.addWidget(QLabel("<b>Past Workouts</b>"))
+        
+        self.workout_table = QTableWidget(0, 3)
+        self.workout_table.setHorizontalHeaderLabels(["Date", "Workout", "Duration"])
+        self.workout_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.workout_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.workout_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.workout_table.itemSelectionChanged.connect(self._on_workout_selected)
+        left_layout.addWidget(self.workout_table)
+        
+        btn_layout = QHBoxLayout()
+        btn_add_manual = QPushButton("➕ Add Past Workout")
+        btn_add_manual.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        btn_add_manual.clicked.connect(self._add_manual_workout)
+        
+        btn_delete_workout = QPushButton("🗑️ Delete Selected Workout")
+        btn_delete_workout.setStyleSheet("color: #F44336;")
+        btn_delete_workout.clicked.connect(self._delete_selected_workout)
+        
+        btn_layout.addWidget(btn_add_manual)
+        btn_layout.addWidget(btn_delete_workout)
+        left_layout.addLayout(btn_layout)
+        
+        splitter.addWidget(left_panel)
+        
+        # --- RIGHT: Workout Logs ---
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        self.lbl_details = QLabel("<b>Workout Details</b>")
+        right_layout.addWidget(self.lbl_details)
+        
+        self.log_table = QTableWidget(0, 5)
+        self.log_table.setHorizontalHeaderLabels(["Exercise", "Set", "Reps", "Weight", "RPE"])
+        self.log_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        right_layout.addWidget(self.log_table)
+        
+        splitter.addWidget(right_panel)
+        splitter.setSizes([400, 600])
+        layout.addWidget(splitter)
+
+    def refresh_data(self):
+        self.workout_table.blockSignals(True)
+        self.workout_table.setRowCount(0)
+        
+        workouts = WorkoutDatabaseManager.get_workout_history(self.current_user_id)
+        for i, w in enumerate(workouts):
+            self.workout_table.insertRow(i)
+            self.workout_table.setItem(i, 0, QTableWidgetItem(w['date'].split(" ")[0]))
+            self.workout_table.setItem(i, 1, QTableWidgetItem(w['name']))
+            self.workout_table.setItem(i, 2, QTableWidgetItem(f"{w['duration_minutes']} min"))
+            
+            # Store ID invisibly
+            self.workout_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, w['id'])
+            
+        self.workout_table.blockSignals(False)
+        self.log_table.setRowCount(0)
+
+    def _on_workout_selected(self):
+        row = self.workout_table.currentRow()
+        if row < 0: return
+        
+        workout_id = self.workout_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        name = self.workout_table.item(row, 1).text()
+        self.lbl_details.setText(f"<b>Details for: {name}</b>")
+        
+        logs = WorkoutDatabaseManager.get_workout_logs(workout_id)
+        self.log_table.setRowCount(0)
+        
+        for i, log in enumerate(logs):
+            self.log_table.insertRow(i)
+            self.log_table.setItem(i, 0, QTableWidgetItem(log['exercise']))
+            self.log_table.setItem(i, 1, QTableWidgetItem("W" if log['is_warmup'] else str(log['set_number'])))
+            self.log_table.setItem(i, 2, QTableWidgetItem(str(log['reps'])))
+            self.log_table.setItem(i, 3, QTableWidgetItem(f"{log['weight_lbs']} lbs"))
+            self.log_table.setItem(i, 4, QTableWidgetItem(str(log['rpe'])))
+
+    def _add_manual_workout(self):
+        dialog = ManualWorkoutEntryDialog(self.current_user_id, self)
+        if dialog.exec():
+            self.refresh_data()
+    
+    def _delete_selected_workout(self):
+        row = self.workout_table.currentRow()
+        if row < 0: return
+        
+        workout_id = self.workout_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        confirm = QMessageBox.question(self, "Confirm Delete", "Are you sure you want to permanently delete this workout and all its sets?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            WorkoutDatabaseManager.delete_workout(workout_id)
+            self.refresh_data()
+
+========================================
+FILE PATH: ui\views\program_builder.py
+========================================
+
+# ui/views/program_builder.py
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QCheckBox, QSpinBox, QMessageBox, QDialog
+)
+from core.db_operations import WorkoutDatabaseManager
+from ui.components.body_heatmap import AnatomicalHeatmap
+
+class ProgramAnalysisDialog(QDialog):
+    def __init__(self, program_name, volume_map, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Program Analysis: {program_name}")
+        self.resize(600, 500)
+        layout = QVBoxLayout(self)
+        
+        title = QLabel("Full Program Muscular Balance Overlay")
+        title.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(title)
+        
+        heatmap = AnatomicalHeatmap()
+        heatmap.update_heatmap(volume_map)
+        layout.addWidget(heatmap)
+
+class ProgramBuilderView(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        
+        title = QLabel("Periodization & Program Builder")
+        title.setStyleSheet("font-size: 24px; font-weight: bold;")
+        self.layout.addWidget(title)
+        
+        top = QHBoxLayout()
+        self.program_name = QLineEdit()
+        self.program_name.setPlaceholderText("Program Name (e.g., 8-Week Hybrid)")
+        
+        self.cycle_days = QSpinBox()
+        self.cycle_days.setPrefix("Cycle Length (Days): ")
+        self.cycle_days.setRange(1, 30)
+        self.cycle_days.setValue(7)
+        self.cycle_days.valueChanged.connect(self._rebuild_table)
+        
+        btn_save = QPushButton("Save Program")
+        btn_save.setStyleSheet("background-color: #4CAF50; color: white;")
+        btn_save.clicked.connect(self._save_program)
+        
+        btn_analyze = QPushButton("Analyze Full Program Balance")
+        btn_analyze.setStyleSheet("background-color: #9C27B0; color: white;")
+        btn_analyze.clicked.connect(self._analyze_program)
+        
+        top.addWidget(self.program_name)
+        top.addWidget(self.cycle_days)
+        top.addWidget(btn_save)
+        top.addWidget(btn_analyze)
+        self.layout.addLayout(top)
+        
+        # Fix for Program Builder squishing
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Day #", "Routine Template", "Periodization Flag"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)          # Template Name Stretches
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        
+        self.layout.addWidget(self.table)
+        
+    def refresh_data(self):
+        self.templates = WorkoutDatabaseManager.get_all_templates()
+        self._rebuild_table()
+        
+    def _rebuild_table(self):
+        days = self.cycle_days.value()
+        self.table.setRowCount(days)
+        for i in range(days):
+            self.table.setItem(i, 0, QTableWidgetItem(f"Day {i+1}"))
+            
+            combo = QComboBox()
+            combo.addItem("Rest Day", userData=None)
+            for t in self.templates:
+                combo.addItem(t['name'], userData=t['id'])
+            self.table.setCellWidget(i, 1, combo)
+            
+            chk = QCheckBox("Deload Day")
+            self.table.setCellWidget(i, 2, chk)
+
+    def _save_program(self):
+        name = self.program_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Error", "Program must have a name.")
+            return
+            
+        days_data = []
+        for i in range(self.table.rowCount()):
+            t_id = self.table.cellWidget(i, 1).currentData()
+            is_deload = 1 if self.table.cellWidget(i, 2).isChecked() else 0
+            if t_id:
+                days_data.append({"day_number": i+1, "template_id": t_id, "is_deload": is_deload})
+                
+        WorkoutDatabaseManager.save_program(name, self.cycle_days.value(), days_data)
+        QMessageBox.information(self, "Saved", f"Program '{name}' saved successfully.")
+
+    def _analyze_program(self):
+        name = self.program_name.text().strip()
+        if not name: return
+        v_map = WorkoutDatabaseManager.get_program_volume_map(name)
+        dialog = ProgramAnalysisDialog(name, v_map, self)
+        dialog.exec()
+
+========================================
+FILE PATH: ui\views\program_sandbox.py
+========================================
+
+from PyQt6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, 
+    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
+    QComboBox, QSpinBox, QSplitter, QListWidget, QAbstractItemView,
+    QListWidgetItem, QMessageBox
+)
+from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt
+
+from core.db_operations import WorkoutDatabaseManager
+from ui.components.body_heatmap import AnatomicalHeatmap, MuscleMapper
+from ui.views.base_view import BaseView
+
+class ProgramSandboxView(BaseView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.all_exercises = []
+        self.neglected_muscles = []
+        self.show_balance_suggestions = False
+
+        layout = QHBoxLayout(self)
+        
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        self._setup_left_panel()
+        self._setup_middle_panel()
+        self._setup_right_panel()
+        
+        layout.addWidget(self.splitter)
+        
+        # Default widths (Heatmap : Bank : Schedule)
+        self.splitter.setSizes([350, 250, 500])
+        
+        self._load_exercise_bank()
+
+    def refresh_data(self):
+        current_search = self.search_bar.text()
+        self._load_exercise_bank()
+        
+        self.combo_load_program.blockSignals(True)
+        self.combo_load_program.clear()
+        self.combo_load_program.addItem("-- Create New Program --", userData=None)
+        programs = WorkoutDatabaseManager.get_programs_for_user(self.current_user_id)
+        for p in programs:
+            self.combo_load_program.addItem(p['name'], userData=p['id'])
+        self.combo_load_program.blockSignals(False)
+        
+        # Force UI reset when switching user/program context
+        self.combo_load_program.setCurrentIndex(0)
+        self._load_existing_program() 
+        
+        if current_search: self._filter_bank(current_search)
+        self._trigger_live_feedback()
+    
+    def _setup_left_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("<b>Analysis View:</b>"))
+        self.combo_analysis_view = QComboBox()
+        self.combo_analysis_view.addItems(["Overall Program"])
+        self.combo_analysis_view.currentTextChanged.connect(self._trigger_live_feedback)
+        header_layout.addWidget(self.combo_analysis_view)
+        layout.addLayout(header_layout)
+        
+        self.heatmap = AnatomicalHeatmap()
+        self.heatmap.regionClicked.connect(self._on_heatmap_clicked)
+        layout.addWidget(self.heatmap, stretch=1)
+        
+        self.lbl_assistant = QLabel("<b>Assistant:</b> Add exercises to see feedback.")
+        self.lbl_assistant.setWordWrap(True)
+        self.lbl_assistant.setStyleSheet("color: #2196F3; padding: 10px; background: #1E1E1E; border-radius: 5px;")
+        layout.addWidget(self.lbl_assistant)
+        
+        self.splitter.addWidget(panel)
+
+    def _setup_middle_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.addWidget(QLabel("<b>Exercise Bank</b>"))
+        
+        # Bodypart Filter
+        self.combo_bodypart = QComboBox()
+        self.combo_bodypart.addItems(["All Muscles"] + list(MuscleMapper.REGION_MAP.keys()))
+        self.combo_bodypart.currentTextChanged.connect(self._refresh_bank_display)
+        layout.addWidget(self.combo_bodypart)
+        
+        # Text Search
+        self.search_bar = QLineEdit()
+        self.search_bar.setPlaceholderText("Search exercises...")
+        self.search_bar.textChanged.connect(self._refresh_bank_display)
+        layout.addWidget(self.search_bar)
+
+        # Exercise Suggestions
+        self.btn_toggle_balance = QPushButton("🧠 Show Balancing Suggestions")
+        self.btn_toggle_balance.setCheckable(True)
+        self.btn_toggle_balance.toggled.connect(self._toggle_balance_suggestions)
+        layout.addWidget(self.btn_toggle_balance)
+        
+        # Exercise List
+        self.exercise_list = QListWidget()
+        self.exercise_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.exercise_list.itemDoubleClicked.connect(self._add_to_pool)
+        layout.addWidget(self.exercise_list)
+        
+        self.btn_add = QPushButton("Add to Program ->")
+        self.btn_add.clicked.connect(self._add_to_pool)
+        layout.addWidget(self.btn_add)
+        
+        self.splitter.addWidget(panel)
+
+    def _setup_right_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        
+        # --- Program Loading Header ---
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("<b>Program Schedule</b>"))
+        
+        self.combo_load_program = QComboBox()
+        self.combo_load_program.addItem("-- Create New Program --", userData=None)
+        self.combo_load_program.currentIndexChanged.connect(self._load_existing_program)
+        header_layout.addWidget(self.combo_load_program)
+        layout.addLayout(header_layout)
+        
+        # --- Program Name Editor ---
+        self.txt_program_name = QLineEdit()
+        self.txt_program_name.setPlaceholderText("Enter Program Name...")
+        layout.addWidget(self.txt_program_name)
+        
+        # The interactive pool table
+        self.pool_table = QTableWidget(0, 4)
+        self.pool_table.setHorizontalHeaderLabels(["Exercise", "Sets", "Day", "Action"])
+        header = self.pool_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for i in range(1, 4):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.pool_table)
+        
+        self.lbl_fatigue = QLabel("Daily Volume: Safe")
+        self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        layout.addWidget(self.lbl_fatigue)
+        
+        self.btn_save = QPushButton("Save Program")
+        self.btn_save.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
+        self.btn_save.clicked.connect(self._save_program)
+        layout.addWidget(self.btn_save)
+        
+        self.splitter.addWidget(panel)
+
+    def _load_exercise_bank(self):
+        self.all_exercises = WorkoutDatabaseManager.get_all_exercises()
+        self.exercise_list.clear()
+        for ex in self.all_exercises:
+            self.exercise_list.addItem(ex['name'])
+
+    def _load_existing_program(self):
+        program_id = self.combo_load_program.currentData()
+        self.pool_table.setRowCount(0)
+        
+        if not program_id:
+            self.txt_program_name.clear()
+            self._trigger_live_feedback()
+            return
+            
+        self.txt_program_name.setText(self.combo_load_program.currentText())
+        data = WorkoutDatabaseManager.get_sandbox_program_data(program_id)
+        
+        for item in data:
+            row = self.pool_table.rowCount()
+            self.pool_table.insertRow(row)
+            self.pool_table.setItem(row, 0, QTableWidgetItem(item['exercise']))
+            
+            spin_sets = QSpinBox()
+            spin_sets.setRange(1, 10)
+            spin_sets.setValue(item['sets'])
+            spin_sets.valueChanged.connect(self._trigger_live_feedback)
+            self.pool_table.setCellWidget(row, 1, spin_sets)
+            
+            combo_day = QComboBox()
+            combo_day.addItems(["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"])
+            combo_day.setCurrentText(item['day'])
+            combo_day.currentTextChanged.connect(self._trigger_live_feedback)
+            self.pool_table.setCellWidget(row, 2, combo_day)
+            
+            btn_remove = QPushButton("X")
+            btn_remove.setStyleSheet("color: #F44336;")
+            btn_remove.clicked.connect(lambda _, r=row: self._remove_from_pool(r))
+            self.pool_table.setCellWidget(row, 3, btn_remove)
+            
+        self._trigger_live_feedback()
+
+    def _save_program(self):
+        name = self.txt_program_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Error", "Please enter a program name.")
+            return
+            
+        pool_data = []
+        for row in range(self.pool_table.rowCount()):
+            if not self.pool_table.item(row, 0): continue
+            pool_data.append({
+                'exercise': self.pool_table.item(row, 0).text(),
+                'sets': self.pool_table.cellWidget(row, 1).value(),
+                'day': self.pool_table.cellWidget(row, 2).currentText()
+            })
+            
+        WorkoutDatabaseManager.save_sandbox_program(
+            user_id=self.current_user_id,
+            program_id=self.combo_load_program.currentData(),
+            program_name=name,
+            pool_data=pool_data
+        )
+        
+        QMessageBox.information(self, "Success", f"Program '{name}' saved successfully!")
+        self.refresh_data()
+    
+    def _on_heatmap_clicked(self, muscle_name: str, region_name: str):
+        if self.combo_bodypart.findText(region_name) != -1:
+            self.combo_bodypart.setCurrentText(region_name)
+
+    def _toggle_balance_suggestions(self, checked):
+        self.show_balance_suggestions = checked
+        if checked:
+            self.btn_toggle_balance.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        else:
+            self.btn_toggle_balance.setStyleSheet("")
+        self._refresh_bank_display()
+
+    def _auto_assign_split(self):
+        for row in range(self.pool_table.rowCount()):
+            name = self.pool_table.item(row, 0).text()
+            ex = next((e for e in self.all_exercises if e['name'] == name), None)
+            if not ex: continue
+            
+            primary = ex['primary_muscle'].lower() if ex['primary_muscle'] else ''
+            combo = self.pool_table.cellWidget(row, 2)
+            
+            if primary in ['chest', 'shoulders', 'triceps']:
+                combo.setCurrentText('Day 1')
+            elif primary in ['latissimus', 'upper-back', 'biceps']:
+                combo.setCurrentText('Day 2')
+            elif primary in ['quadriceps', 'hamstrings', 'glutes', 'calves']:
+                combo.setCurrentText('Day 3')
+            else:
+                combo.setCurrentText('Day 4')
+                
+        self._trigger_live_feedback()
+
+    def _filter_bank(self, text):
+        for i in range(self.exercise_list.count()):
+            item = self.exercise_list.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
+
+    def _add_to_pool(self):
+        selected = self.exercise_list.selectedItems()
+        for item in selected:
+            if item.flags() == Qt.ItemFlag.NoItemFlags:
+                continue # Skip headers
+                
+            raw_name = item.data(Qt.ItemDataRole.UserRole)
+            if not raw_name: 
+                raw_name = item.text()
+                
+            row = self.pool_table.rowCount()
+            self.pool_table.insertRow(row)
+            
+            self.pool_table.setItem(row, 0, QTableWidgetItem(raw_name))
+            
+            spin_sets = QSpinBox()
+            spin_sets.setRange(1, 10)
+            spin_sets.setValue(3)
+            spin_sets.valueChanged.connect(self._trigger_live_feedback)
+            self.pool_table.setCellWidget(row, 1, spin_sets)
+            
+            combo_day = QComboBox()
+            combo_day.addItems(["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"])
+            combo_day.currentTextChanged.connect(self._trigger_live_feedback)
+            self.pool_table.setCellWidget(row, 2, combo_day)
+            
+            btn_remove = QPushButton("X")
+            btn_remove.setStyleSheet("color: #F44336;")
+            btn_remove.clicked.connect(lambda _, r=row: self._remove_from_pool(r))
+            self.pool_table.setCellWidget(row, 3, btn_remove)
+            
+        # Calling feedback will automatically hide the newly added item from the bank
+        self._trigger_live_feedback()
+
+    def _remove_from_pool(self, row):
+        self.pool_table.removeRow(row)
+        self._trigger_live_feedback() # This puts item back into the bank
+
+    def _refresh_bank_display(self, *args):
+        search_text = self.search_bar.text().lower()
+        selected_bodypart = self.combo_bodypart.currentText().lower()
+        
+        # 1. Get exercises currently in the pool (so we can hide them)
+        pool_exercises = set()
+        for row in range(self.pool_table.rowCount()):
+            if self.pool_table.item(row, 0):
+                pool_exercises.add(self.pool_table.item(row, 0).text())
+                
+        self.exercise_list.clear()
+        regular_items = []
+        suggested_items = []
+        
+        # 2. Filter exercises
+        for ex in self.all_exercises:
+            name = ex['name']
+            primary = ex['primary_muscle'].lower() if ex['primary_muscle'] else ''
+            secondary = ex['secondary_muscles'].lower() if ex['secondary_muscles'] else ''
+            
+            # Hide if already in pool
+            if name in pool_exercises: continue
+            # Hide if it fails text search    
+            if search_text and search_text not in name.lower(): continue
+                
+            # Hide if it fails bodypart combobox
+            if selected_bodypart != "all muscles":
+                targets = MuscleMapper.REGION_MAP.get(selected_bodypart.capitalize(), [selected_bodypart])
+                if not any(t in primary or t in secondary for t in targets):
+                    continue
+                    
+            # Sort into 'Suggested' vs 'Regular' based on heatmap analysis
+            if self.show_balance_suggestions and primary in self.neglected_muscles:
+                suggested_items.append(name)
+            else:
+                regular_items.append(name)
+                
+        # 3. Populate QListWidget with formatting
+        if suggested_items:
+            # Create a non-selectable divider
+            header = QListWidgetItem("✨ RECOMMENDED TO BALANCE ✨")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setBackground(QColor("#2A1F11"))
+            header.setForeground(QColor("#FF9800"))
+            self.exercise_list.addItem(header)
+            
+            for name in sorted(suggested_items):
+                item = QListWidgetItem(f"⭐ {name}")
+                item.setForeground(QColor("#FF9800"))
+                # Save the real name in UserRole data so the program reads "Pull-ups" not "⭐ Pull-ups"
+                item.setData(Qt.ItemDataRole.UserRole, name) 
+                self.exercise_list.addItem(item)
+                
+            sep = QListWidgetItem("-" * 30)
+            sep.setFlags(Qt.ItemFlag.NoItemFlags)
+            sep.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.exercise_list.addItem(sep)
+            
+        for name in sorted(regular_items):
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            self.exercise_list.addItem(item)
+
+    def _trigger_live_feedback(self):
+        active_view = self.combo_analysis_view.currentText()
+        exercises_data = []
+        day_volumes = {}
+        active_days = set()
+        
+        for row in range(self.pool_table.rowCount()):
+            if not self.pool_table.item(row, 0): continue
+            
+            name = self.pool_table.item(row, 0).text()
+            sets = self.pool_table.cellWidget(row, 1).value()
+            day = self.pool_table.cellWidget(row, 2).currentText()
+            
+            if day != "Unassigned":
+                active_days.add(day)
+                day_volumes[day] = day_volumes.get(day, 0) + sets
+
+            if active_view == "Overall Program" or active_view == day:
+                exercises_data.append({'name': name, 'sets': sets})
+
+        current_options = [self.combo_analysis_view.itemText(i) for i in range(self.combo_analysis_view.count())]
+        needed_options = ["Overall Program"] + sorted(list(active_days))
+        if current_options != needed_options:
+            self.combo_analysis_view.blockSignals(True)
+            self.combo_analysis_view.clear()
+            self.combo_analysis_view.addItems(needed_options)
+            if active_view in needed_options:
+                self.combo_analysis_view.setCurrentText(active_view)
+            self.combo_analysis_view.blockSignals(False)
+
+        # 1. Update Heatmap
+        volume_map = WorkoutDatabaseManager.calculate_muscle_volume(exercises_data)
+        self.heatmap.update_heatmap(volume_map)
+        
+        # 2. Check Daily Fatigue
+        overloaded_days = [d for d, s in day_volumes.items() if s > 20]
+        if overloaded_days:
+            self.lbl_fatigue.setText(f"⚠️ High Fatigue: {', '.join(overloaded_days)} exceed 20 sets.")
+            self.lbl_fatigue.setStyleSheet("color: #F44336; font-weight: bold;")
+        else:
+            self.lbl_fatigue.setText("Daily Volume: Optimal")
+            self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            
+        # 3. Update the Smart Assistant
+        if active_view == "Overall Program":
+            core_muscles = ["chest", "latissimus", "shoulders", "quadriceps", "hamstrings", "core"]
+            self.neglected_muscles = [m for m in core_muscles if volume_map.get(m, 0) < 3]
+
+            if not exercises_data:
+                self.lbl_assistant.setText("<b>Assistant:</b> Add exercises to the pool to see feedback.")
+                self.lbl_assistant.setStyleSheet("color: #2196F3;")
+            elif self.neglected_muscles:
+                self.lbl_assistant.setText(f"<b>Assistant:</b> Neglected areas: {', '.join([m.title() for m in self.neglected_muscles])}.")
+                self.lbl_assistant.setStyleSheet("color: #FF9800;")
+            else:
+                self.lbl_assistant.setText("<b>Assistant:</b> Well balanced!")
+                self.lbl_assistant.setStyleSheet("color: #4CAF50;")
+        else:
+            self.lbl_assistant.setText(f"<b>{active_view} Stats:</b> {day_volumes.get(active_view, 0)} Total Sets.")
+            self.lbl_assistant.setStyleSheet("color: #2196F3;")
+
+        # 4. Trigger bank refresh to apply the new neglect filters and sort to top
+        self._refresh_bank_display()
+
+========================================
+FILE PATH: ui\views\routine_builder.py
+========================================
+
+# ui/views/routine_builder.py
+from PyQt6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QListWidget, 
+    QTableWidget, QTableWidgetItem, QPushButton, QLabel, 
+    QHeaderView, QInputDialog, QMessageBox, QComboBox,
+    QCheckBox, QLineEdit, QSpinBox, QDoubleSpinBox, QCompleter,
+    QSizePolicy
+)
+from PyQt6.QtCore import Qt
+
+from core.database import get_connection
+from core.db_operations import WorkoutDatabaseManager
+from core.events import event_bus
+from ui.components.muscle_analyzer import MuscleCoverageDialog
+
+class RoutineBuilderView(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+
+        # --- LEFT SIDE ---
+        left_panel = QVBoxLayout()
+        left_panel.addWidget(QLabel("Your Workout Templates"))
+        self.search_splits = QLineEdit()
+        self.search_splits.setPlaceholderText("Search splits...")
+        self.search_splits.textChanged.connect(self._filter_splits)
+        left_panel.addWidget(self.search_splits)
+        
+        self.workout_list = QListWidget()
+        left_panel.addWidget(self.workout_list)
+        
+        left_btn_layout = QHBoxLayout()
+        self.btn_add_workout = QPushButton("+ New Split")
+        self.btn_rename_workout = QPushButton("Rename")
+        self.btn_delete_workout = QPushButton("Delete")
+        left_btn_layout.addWidget(self.btn_add_workout)
+        left_btn_layout.addWidget(self.btn_rename_workout)
+        left_btn_layout.addWidget(self.btn_delete_workout)
+        left_panel.addLayout(left_btn_layout, stretch=1)
+        layout.addLayout(left_panel, stretch=1)
+
+        # --- RIGHT SIDE ---
+        right_panel = QVBoxLayout()
+        header_layout = QHBoxLayout()
+        self.lbl_current_template = QLabel("Select a template...")
+        self.chk_active = QCheckBox("Include in Current Program")
+        self.btn_analyze = QPushButton("Analyze Split")
+        header_layout.addWidget(self.lbl_current_template)
+        header_layout.addStretch()
+        header_layout.addWidget(self.chk_active)
+        header_layout.addWidget(self.btn_analyze)
+        right_panel.addLayout(header_layout)
+        
+        # 6 Columns now (Added Reorder Controls, Min/Max Reps)
+        self.exercise_table = QTableWidget(0, 7) 
+        self.exercise_table.setHorizontalHeaderLabels(["Order", "Exercise", "Sets", "Min Reps", "Max Reps", "Weight", "Rest (s)"])
+        
+        # Ensure Exercise name stretches, others wrap to content
+        header = self.exercise_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents) # Up/Down arrows
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)          # Exercise Name gets all extra room
+        for i in range(2, 7):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents) # Sets, Reps, Wt, Rest
+
+        right_panel.addWidget(self.exercise_table)
+
+        btn_layout = QHBoxLayout()
+        self.btn_add_ex = QPushButton("+ Add Row")
+        self.btn_remove_ex = QPushButton("- Remove Selected Row")
+        self.btn_save = QPushButton("Save Template Changes")
+        btn_layout.addWidget(self.btn_add_ex)
+        btn_layout.addWidget(self.btn_remove_ex)
+        btn_layout.addWidget(self.btn_save)
+        right_panel.addLayout(btn_layout)
+
+        layout.addLayout(right_panel, stretch=3)
+
+        # --- SIGNALS ---
+        self.workout_list.currentRowChanged.connect(self._on_template_selected)
+        self.chk_active.toggled.connect(self._on_active_toggled)
+        self.btn_add_workout.clicked.connect(self._on_add_workout_clicked)
+        self.btn_add_ex.clicked.connect(self._on_add_exercise_clicked)
+        self.btn_remove_ex.clicked.connect(self._on_remove_row)
+        self.btn_save.clicked.connect(self._on_save_clicked)
+        
+        # Subscribe to Global Event Bus
+        event_bus.data_changed.connect(self.refresh_data)
+        self.refresh_data()
+
+    def refresh_data(self):
+        self.workout_list.blockSignals(True)
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, is_active FROM routine_templates")
+        self.all_templates = cursor.fetchall()
+        conn.close()
+
+        ex_data = WorkoutDatabaseManager.get_all_exercises()
+        self.exercise_bank = [ex['name'] for ex in ex_data]
+        self._filter_splits(self.search_splits.text())
+        self.workout_list.blockSignals(False)
+
+    def _filter_splits(self, text):
+        self.workout_list.clear()
+        sorted_templates = sorted(self.all_templates, key=lambda t: (-t['is_active'], t['name'].lower()))
+        for t in sorted_templates:
+            if text.lower() in t['name'].lower():
+                prefix = "★ " if t['is_active'] else "   " 
+                self.workout_list.addItem(prefix + t['name'])
+                self.workout_list.item(self.workout_list.count() - 1).setData(100, t['id'])
+
+    def _on_template_selected(self, index: int):
+        if index < 0: return
+        template_id = self.workout_list.item(index).data(100)
+        self.exercise_table.setRowCount(0)
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM routine_exercises WHERE template_id = ?", (template_id,))
+        for row, ex in enumerate(cursor.fetchall()):
+            self.exercise_table.insertRow(row)
+            self._add_validated_row(row, ex['exercise_name'], ex['target_sets'], ex['target_reps_min'], ex['target_reps_max'], ex['target_weight'], ex['rest_seconds'])
+        conn.close()
+
+    def _add_validated_row(self, row, ex_name, sets=3, min_r=8, max_r=10, weight=0.0, rest=90):
+        # 0. REORDER CONTROLS
+        ctrl_widget = QWidget()
+        ctrl_layout = QHBoxLayout(ctrl_widget)
+        ctrl_layout.setContentsMargins(0,0,0,0)
+        btn_up = QPushButton("↑")
+        btn_up.clicked.connect(lambda: self._move_row(ctrl_widget, -1))
+        btn_down = QPushButton("↓")
+        btn_down.clicked.connect(lambda: self._move_row(ctrl_widget, 1))
+        ctrl_layout.addWidget(btn_up); ctrl_layout.addWidget(btn_down)
+        self.exercise_table.setCellWidget(row, 0, ctrl_widget)
+
+        # 1. EXERCISE COMBO
+        combo = QComboBox()
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.setMinimumWidth(150) # Prevent it from collapsing completely
+        combo.setEditable(True)
+        combo.addItems(self.exercise_bank)
+        completer = QCompleter(self.exercise_bank)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        combo.setCompleter(completer)
+        combo.setCurrentText(ex_name)
+        self.exercise_table.setCellWidget(row, 1, combo)
+        
+        # 2-6. SPINBOXES
+        spin_sets = QSpinBox(); spin_sets.setValue(int(sets))
+        # Create the spinboxes
+        spin_min = QSpinBox()
+        spin_min.setValue(int(min_r))
+        spin_max = QSpinBox()
+        spin_max.setValue(int(max_r))
+        spin_min.valueChanged.connect(lambda val: spin_max.setMinimum(val))
+        spin_max.valueChanged.connect(lambda val: spin_min.setMaximum(val))
+
+        spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1500); spin_wt.setValue(float(weight))
+        spin_rest = QSpinBox(); spin_rest.setRange(0, 600); spin_rest.setSingleStep(15); spin_rest.setValue(int(rest))
+        
+        self.exercise_table.setCellWidget(row, 2, spin_sets)
+        self.exercise_table.setCellWidget(row, 3, spin_min)
+        self.exercise_table.setCellWidget(row, 4, spin_max)
+        self.exercise_table.setCellWidget(row, 5, spin_wt)
+        self.exercise_table.setCellWidget(row, 6, spin_rest)
+
+    def _move_row(self, widget, direction):
+        row = self.exercise_table.indexAt(widget.pos()).row()
+        target_row = row + direction
+        if target_row < 0 or target_row >= self.exercise_table.rowCount(): return
+        
+        # Extract existing
+        ex = self.exercise_table.cellWidget(row, 1).currentText()
+        s = self.exercise_table.cellWidget(row, 2).value()
+        m1 = self.exercise_table.cellWidget(row, 3).value()
+        m2 = self.exercise_table.cellWidget(row, 4).value()
+        w = self.exercise_table.cellWidget(row, 5).value()
+        r = self.exercise_table.cellWidget(row, 6).value()
+        
+        self.exercise_table.removeRow(row)
+        self.exercise_table.insertRow(target_row)
+        self._add_validated_row(target_row, ex, s, m1, m2, w, r)
+
+    def _on_add_exercise_clicked(self):
+        row = self.exercise_table.rowCount()
+        self.exercise_table.insertRow(row)
+        self._add_validated_row(row, "New Exercise")
+
+    def _on_remove_row(self):
+        r = self.exercise_table.currentRow()
+        if r >= 0: self.exercise_table.removeRow(r)
+
+    def _on_save_clicked(self):
+        item = self.workout_list.currentItem()
+        if not item: return
+        template_id = item.data(100)
+        
+        ex_data = []
+        for r in range(self.exercise_table.rowCount()):
+            ex_data.append({
+                'name': self.exercise_table.cellWidget(r, 1).currentText(),
+                'sets': self.exercise_table.cellWidget(r, 2).value(),
+                'min_reps': self.exercise_table.cellWidget(r, 3).value(),
+                'max_reps': self.exercise_table.cellWidget(r, 4).value(),
+                'weight': self.exercise_table.cellWidget(r, 5).value(),
+                'rest': self.exercise_table.cellWidget(r, 6).value()
+            })
+            
+        WorkoutDatabaseManager.save_routine_exercises(template_id, ex_data)
+        event_bus.data_changed.emit() # Inform other tabs
+        QMessageBox.information(self, "Saved", "Template updated successfully.")
+
+    def _on_active_toggled(self, checked):
+        pass # Handle DB update 
+    def _on_add_workout_clicked(self):
+        pass
+
+========================================
+FILE PATH: ui\views\settings.py
+========================================
+
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, 
+    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, 
+    QMessageBox, QListWidget, QAbstractItemView, QTabWidget, QSpinBox, QDoubleSpinBox
+)
+from core.database import get_connection
+from ui.views.base_view import BaseView
+
+class SettingsView(BaseView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        
+        title = QLabel("Application Settings")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(title)
+
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        self._setup_api_tab()
+        self._setup_dict_tab()
+        self._setup_garage_tab()
+        self.refresh_data()
+
+    def refresh_data(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT access_token, refresh_token FROM api_integrations WHERE provider_name='Fitbit'")
+        api_data = cursor.fetchone()
+        if api_data:
+            self.client_id_input.setText(api_data['access_token'])
+            self.client_secret_input.setText(api_data['refresh_token'])
+
+        self.dict_table.setRowCount(0)
+        cursor.execute("SELECT name, primary_muscle, secondary_muscles FROM exercises ORDER BY name ASC")
+        for row, ex in enumerate(cursor.fetchall()):
+            self.dict_table.insertRow(row)
+            self.dict_table.setItem(row, 0, QTableWidgetItem(ex['name']))
+            self.dict_table.setItem(row, 1, QTableWidgetItem(ex['primary_muscle'] or "N/A"))
+            self.dict_table.setItem(row, 2, QTableWidgetItem(ex['secondary_muscles'] or "N/A"))
+            
+        self.garage_table.setRowCount(0)
+        cursor.execute("SELECT name, weight_lbs, quantity, is_barbell FROM equipment ORDER BY weight_lbs DESC")
+        for row, item in enumerate(cursor.fetchall()):
+            self.garage_table.insertRow(row)
+            self.garage_table.setItem(row, 0, QTableWidgetItem(item['name']))
+            self.garage_table.setItem(row, 1, QTableWidgetItem(f"{item['weight_lbs']} lbs"))
+            self.garage_table.setItem(row, 2, QTableWidgetItem(str(item['quantity'])))
+            self.garage_table.setItem(row, 3, QTableWidgetItem("Yes" if item['is_barbell'] else "No"))
+        conn.close()
+
+    def _setup_api_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        form_layout = QHBoxLayout()
+        self.client_id_input = QLineEdit()
+        self.client_secret_input = QLineEdit()
+        self.client_secret_input.setEchoMode(QLineEdit.EchoMode.Password)
+        
+        form_layout.addWidget(QLabel("Client ID:"))
+        form_layout.addWidget(self.client_id_input)
+        form_layout.addWidget(QLabel("Secret:"))
+        form_layout.addWidget(self.client_secret_input)
+        
+        btn_save = QPushButton("Save Credentials")
+        btn_save.setStyleSheet("background-color: #2196F3; color: white;")
+        btn_save.clicked.connect(self._save_api_keys)
+        
+        layout.addLayout(form_layout)
+        layout.addWidget(btn_save)
+        layout.addStretch()
+        self.tabs.addTab(tab, "Fitbit API")
+
+    def _setup_dict_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        add_layout = QHBoxLayout()
+        
+        self.new_ex_name = QLineEdit()
+        muscle_groups = ["Chest", "Back", "Quads", "Hamstrings", "Calves", "Shoulders", "Biceps", "Triceps", "Core", "Glutes"]
+        self.new_ex_primary = QComboBox()
+        self.new_ex_primary.addItems(muscle_groups)
+        self.new_ex_secondary = QListWidget()
+        self.new_ex_secondary.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.new_ex_secondary.addItems(muscle_groups)
+        self.new_ex_secondary.setFixedHeight(80) 
+        
+        btn_add = QPushButton("+ Add")
+        btn_add.clicked.connect(self._add_exercise_to_db)
+        
+        add_layout.addWidget(self.new_ex_name)
+        add_layout.addWidget(self.new_ex_primary)
+        add_layout.addWidget(self.new_ex_secondary)
+        add_layout.addWidget(btn_add)
+        layout.addLayout(add_layout)
+
+        self.dict_table = QTableWidget(0, 3)
+        self.dict_table.setHorizontalHeaderLabels(["Name", "Primary", "Secondary"])
+        self.dict_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.dict_table)
+        self.tabs.addTab(tab, "Exercise Dictionary")
+
+    def _setup_garage_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        add_layout = QHBoxLayout()
+        self.eq_name = QLineEdit()
+        self.eq_name.setPlaceholderText("Name (e.g., 45lb Plate)")
+        self.eq_weight = QDoubleSpinBox()
+        self.eq_weight.setSuffix(" lbs")
+        self.eq_qty = QSpinBox()
+        self.eq_qty.setPrefix("Qty: ")
+        self.eq_is_barbell = QComboBox()
+        self.eq_is_barbell.addItems(["Plate/Dumbbell", "Barbell"])
+        
+        btn_add = QPushButton("+ Add Equipment")
+        btn_add.clicked.connect(self._add_equipment_to_db)
+        
+        add_layout.addWidget(self.eq_name)
+        add_layout.addWidget(self.eq_weight)
+        add_layout.addWidget(self.eq_qty)
+        add_layout.addWidget(self.eq_is_barbell)
+        add_layout.addWidget(btn_add)
+        layout.addLayout(add_layout)
+        
+        self.garage_table = QTableWidget(0, 4)
+        self.garage_table.setHorizontalHeaderLabels(["Name", "Weight", "Quantity", "Is Barbell?"])
+        self.garage_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.garage_table)
+        self.tabs.addTab(tab, "My Garage")
+
+    def _save_api_keys(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO api_integrations (id, provider_name, access_token, refresh_token) VALUES (1, 'Fitbit', ?, ?) ON CONFLICT(id) DO UPDATE SET access_token=excluded.access_token, refresh_token=excluded.refresh_token", (self.client_id_input.text(), self.client_secret_input.text()))
+        conn.commit(); conn.close()
+
+    def _add_exercise_to_db(self):
+        name = self.new_ex_name.text().strip()
+        secondaries = ", ".join([item.text() for item in self.new_ex_secondary.selectedItems()])
+        conn = get_connection(); cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO exercises (name, category, primary_muscle, secondary_muscles) VALUES (?, 'Hybrid', ?, ?)", (name, self.new_ex_primary.currentText(), secondaries))
+        conn.commit(); conn.close(); self.refresh_data()
+
+    def _add_equipment_to_db(self):
+        name = self.eq_name.text().strip()
+        is_bb = 1 if self.eq_is_barbell.currentText() == "Barbell" else 0
+        conn = get_connection(); cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO equipment (name, weight_lbs, quantity, is_barbell) VALUES (?, ?, ?, ?)", (name, self.eq_weight.value(), self.eq_qty.value(), is_bb))
+        conn.commit(); conn.close(); self.refresh_data()
+
+========================================
+FILE PATH: utils\gui_utils.py
+========================================
+
+from PyQt6.QtWidgets import QPushButton
+
+def create_sidebar_button(text: str) -> QPushButton:
+    """Creates a standardized, styled button for the sidebar."""
+    btn = QPushButton(text)
+    btn.setStyleSheet("""
+        QPushButton {
+            padding: 10px;
+            font-size: 16px;
+            text-align: left;
+            background: transparent;
+            border: none;
+            color: #E0E0E0;
+        }
+        QPushButton:hover {
+            background-color: #3d3d3d;
+            border-radius: 5px;
+        }
+        QPushButton:checked {
+            background-color: #2196F3;
+            color: white;
+            font-weight: bold;
+            border-radius: 5px;
+        }
+    """)
+    btn.setCheckable(True)
+    return btn
+
+def add_button_above_stretch(layout, button):
+    # Find the index of the last item in the layout
+    last_item_index = layout.count() - 1
+    
+    # Check if the last item is a stretch (QSpacerItem)
+    if layout.itemAt(last_item_index) and layout.itemAt(last_item_index).spacerItem():
+        layout.insertWidget(last_item_index, button)
+    else:
+        # Fallback to appending if no stretch currently exists
+        layout.addWidget(button)
+        layout.addStretch()
+
+========================================
+FILE PATH: utils\mock_data.py
+========================================
+
+# utils/mock_data.py
+import random
+from datetime import datetime, timedelta
+from core.database import get_connection
+
+def seed_database():
+    """Populates the isolated test database with historical data, templates, and programs."""
+    print("Seeding database with testing mock data...")
+    
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Seed Multiple Users
+        cursor.execute("INSERT OR IGNORE INTO users (id, username) VALUES (1, 'User_Alpha_Main')")
+        cursor.execute("INSERT OR IGNORE INTO users (id, username) VALUES (2, 'User_Beta_Guest')")
+        
+        # 2. Seed Equipment (Forces logic to snap to available plate combinations)
+        # BUG FIX: Added user_id (1) to match the new schema upgrades
+        equipment_list = [
+            (1, "Standard Barbell", 45.0, 1, 1),
+            (1, "45lb Plate", 45.0, 6, 0), (1, "25lb Plate", 25.0, 2, 0),
+            (1, "10lb Plate", 10.0, 4, 0), (1, "5lb Plate", 5.0, 2, 0), (1, "2.5lb Plate", 2.5, 2, 0)
+        ]
+        for eq in equipment_list:
+            cursor.execute("INSERT OR IGNORE INTO equipment (user_id, name, weight_lbs, quantity, is_barbell) VALUES (?, ?, ?, ?, ?)", eq)
+
+        # 3. Seed Default Exercises
+        try:
+            from core.default_data import get_default_exercises
+            exercises = get_default_exercises()
+            for ex in exercises:
+                cursor.execute('''INSERT OR IGNORE INTO exercises (name, category, primary_muscle, secondary_muscles, cues) 
+                                  VALUES (?, ?, ?, ?, ?)''', 
+                                  (ex['name'], ex.get('category', 'Strength'), ex['primary_muscle'], ex['secondary_muscles'], ex.get('cues', '')))
+        except ImportError:
+            print("Warning: Could not load default exercises. Skipping.")
+        
+        # 4. Seed Programs
+        cursor.execute("INSERT OR IGNORE INTO programs (id, user_id, name, cycle_length_days, total_cycles, is_active) VALUES (1, 1, 'Hypertrophy Phase 1', 7, 4, 1)")
+        cursor.execute("INSERT OR IGNORE INTO programs (id, user_id, name, cycle_length_days, total_cycles, is_active) VALUES (2, 2, 'Guest Calisthenics', 3, 8, 1)")
+        
+        # 5. Seed Routine Templates & Exercises
+        cursor.execute("INSERT OR IGNORE INTO routine_templates (id, name, is_active) VALUES (1, 'Push Day Alpha', 1)")
+        cursor.execute("INSERT OR IGNORE INTO routine_templates (id, name, is_active) VALUES (2, 'Pull Day Alpha', 1)")
+        cursor.execute("INSERT OR IGNORE INTO routine_templates (id, name, is_active) VALUES (3, 'Full Body Beta', 1)")
+
+        # BUG FIX: Replaced target_reps string ('8-10') with target_reps_min and target_reps_max integers
+        # Push Day Alpha Exercises
+        cursor.execute("INSERT INTO routine_exercises (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds) VALUES (1, 'Barbell Bench Press', 3, 8, 10, 135.0, 90)")
+        cursor.execute("INSERT INTO routine_exercises (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds) VALUES (1, 'Barbell Overhead Press', 3, 8, 10, 95.0, 90)")
+
+        # Pull Day Alpha Exercises
+        cursor.execute("INSERT INTO routine_exercises (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds, is_bodyweight) VALUES (2, 'Pull-ups', 3, 8, 15, 0, 90, 1)")
+        cursor.execute("INSERT INTO routine_exercises (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds) VALUES (2, 'Barbell Deadlift', 3, 5, 5, 225.0, 180)")
+
+        # Full Body Beta Exercises
+        cursor.execute("INSERT INTO routine_exercises (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds) VALUES (3, 'Barbell Back Squats', 3, 8, 8, 135.0, 120)")
+
+        # 6. Seed Program Days (Mapping templates to programs)
+        # Alpha's Program: Day 1 Push, Day 3 Pull
+        cursor.execute("INSERT INTO program_days (program_id, day_number, template_id, is_deload) VALUES (1, 1, 1, 0)")
+        cursor.execute("INSERT INTO program_days (program_id, day_number, template_id, is_deload) VALUES (1, 3, 2, 0)")
+        # Beta's Program: Day 1 Full Body
+        cursor.execute("INSERT INTO program_days (program_id, day_number, template_id, is_deload) VALUES (2, 1, 3, 0)")
+
+        # 7. Seed Bodyweight Log
+        base_date = datetime.now() - timedelta(days=30)
+        for i in range(30):
+            log_date = (base_date + timedelta(days=i)).strftime('%Y-%m-%d')
+            cursor.execute("INSERT INTO bodyweight_log (user_id, date, weight_lbs) VALUES (?, ?, ?)", (1, log_date, 180.0 + random.uniform(-1.5, 1.5)))
+            cursor.execute("INSERT INTO bodyweight_log (user_id, date, weight_lbs) VALUES (?, ?, ?)", (2, log_date, 150.0 + random.uniform(-1.0, 1.0)))
+        
+        # 8. Seed Workouts and Logs for User Alpha
+        for i in range(10):
+            workout_date = (base_date + timedelta(days=i*3)).strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute("INSERT INTO workouts (user_id, date, name, duration_minutes, bodyweight_at_time) VALUES (?, ?, ?, ?, ?)", 
+                          (1, workout_date, f"Mock Workout Alpha {i+1}", random.randint(45, 90), 180.0))
+            workout_id = cursor.lastrowid
+            
+            for set_num in range(1, 4):
+                cursor.execute('''INSERT INTO workout_logs 
+                                  (workout_id, exercise_id, set_number, reps, weight_lbs, rpe, target_hit, is_warmup) 
+                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                              (workout_id, 1, set_num, 8, 135.0 + (i*5), 7.5, 1, 0))
+
+        conn.commit()
+        print("Mock data seeding complete. Your test environment is ready.")
+    except Exception as e:
+        conn.rollback()
+        print(f"Error seeding mock data: {e}")
+    finally:
+        conn.close()
+    
+if __name__ == "__main__":
+    seed_database()
+
+========================================
+FILE PATH: utils\theme_manager.py
+========================================
+
+from PyQt6.QtWidgets import QApplication
+
+THEMES = {
+    "catppuccin": {
+        "bg": "#24273a", "surface": "#363a4f", "surface2": "#494d64",
+        "text": "#cad3f5", "primary": "#8aadf4", "border": "#181825"
+    },
+    "nord": {
+        "bg": "#2e3440", "surface": "#3b4252", "surface2": "#434c5e",
+        "text": "#d8dee9", "primary": "#81a1c1", "border": "#2e3440"
+    }
+}
+
+def apply_theme(app: QApplication, theme_name: str = "catppuccin"):
+    colors = THEMES.get(theme_name, THEMES["catppuccin"])
+    
+    qss = f"""
+    QMainWindow, QWidget {{
+        background-color: {colors['bg']};
+        color: {colors['text']};
+    }}
+    QGroupBox {{
+        background-color: {colors['surface']};
+        border: 1px solid {colors['border']};
+        border-radius: 8px;
+        margin-top: 16px; 
+    }}
+    QGroupBox::title {{
+        subcontrol-origin: margin; left: 12px; top: -8px; 
+        color: {colors['primary']}; background-color: {colors['surface']};
+        padding: 0 4px; border-radius: 4px; font-weight: bold;
+    }}
+    QPushButton {{
+        background-color: {colors['surface2']};
+        border: none;
+        border-radius: 4px;
+        padding: 4px 8px; /* Tighter padding so toggle buttons don't explode */
+        color: {colors['text']};
+    }}
+    QPushButton:hover {{
+        background-color: {colors['primary']};
+        color: {colors['bg']};
+    }}
+    QPushButton#primary_action {{
+        background-color: {colors['primary']};
+        color: {colors['bg']};
+        font-weight: bold;
+        padding: 8px 16px; /* The nice, thick padding you like */
+        border-radius: 6px;
+    }}
+    QPushButton#primary_action:hover {{
+        background-color: {colors['text']};
+    }}
+    """
+    app.setStyleSheet(qss)
+
