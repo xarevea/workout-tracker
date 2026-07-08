@@ -5,14 +5,17 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QMessageBox, QDialog, QDoubleSpinBox
 )
 from PyQt6.QtGui import QColor
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 
 from core.db_operations import WorkoutDatabaseManager
+from modules.equipment.plate_calculator import PlateCalculator
 from ui.components.body_heatmap import AnatomicalHeatmap, MuscleMapper
 from ui.views.base_view import BaseView
 
 class ProgramScheduleList(QListWidget):
     """Custom List to handle Drag and Drop from the Exercise Bank."""
+    scheduleChanged = pyqtSignal()
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
@@ -22,8 +25,12 @@ class ProgramScheduleList(QListWidget):
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
     def dropEvent(self, event):
-        if event.source() != self:
-            # Dropped from Exercise Bank
+        if event.source() == self:
+            # Reordering internally
+            super().dropEvent(event)
+            self.scheduleChanged.emit()
+        elif event.source() is not None:
+            # Dropped from Exercise Bank QListWidget
             items = event.source().selectedItems()
             for item in items:
                 ex_name = item.data(Qt.ItemDataRole.UserRole)
@@ -36,22 +43,27 @@ class ProgramScheduleList(QListWidget):
                 new_item.setData(Qt.ItemDataRole.UserRole, ex_name)
                 self.insertItem(drop_row, new_item)
             event.acceptProposedAction()
-            self.window()._trigger_live_feedback()
-        else:
-            # Reordering internally
-            super().dropEvent(event)
-            self.window()._trigger_live_feedback()
+            self.scheduleChanged.emit()
 
 class FinalizeProgramDialog(QDialog):
-    """Clean Popup GUI for configuring advanced exercise fields before saving."""
-    def __init__(self, exercises_data, parent=None):
+    def __init__(self, exercises_data, user_id, parent=None):
         super().__init__(parent)
+        self.user_id = user_id
         self.setWindowTitle("Finalize Program Details")
         self.resize(850, 500)
         self.layout = QVBoxLayout(self)
         
-        self.lbl = QLabel("Set your targets for the new program:")
-        self.layout.addWidget(self.lbl)
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Set your targets for the new program:"))
+        
+        btn_snap = QPushButton("🧲 Auto-Snap Weights to My Equipment")
+        btn_snap.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        btn_snap.setToolTip("Adjusts all target weights to the closest valid combination using your Garage inventory.")
+        btn_snap.clicked.connect(self._snap_to_equipment)
+        header_layout.addStretch()
+        header_layout.addWidget(btn_snap)
+        
+        self.layout.addLayout(header_layout)
 
         self.table = QTableWidget(len(exercises_data), 7)
         self.table.setHorizontalHeaderLabels(["Day", "Exercise", "Sets", "Min Reps", "Max Reps", "Weight", "Rest (s)"])
@@ -59,13 +71,11 @@ class FinalizeProgramDialog(QDialog):
         self.layout.addWidget(self.table)
         
         for row, ex in enumerate(exercises_data):
-            # Day & Exercise (Read Only)
             day_item = QTableWidgetItem(ex['day']); day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             ex_item = QTableWidgetItem(ex['name']); ex_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.table.setItem(row, 0, day_item)
             self.table.setItem(row, 1, ex_item)
             
-            # Spinboxes
             spin_sets = QSpinBox(); spin_sets.setValue(3)
             spin_min = QSpinBox(); spin_min.setValue(8)
             spin_max = QSpinBox(); spin_max.setValue(12)
@@ -79,9 +89,18 @@ class FinalizeProgramDialog(QDialog):
             self.table.setCellWidget(row, 6, spin_rest)
 
         btn_save = QPushButton("Confirm & Save Program")
-        btn_save.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px;")
+        btn_save.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;")
         btn_save.clicked.connect(self.accept)
         self.layout.addWidget(btn_save)
+
+    def _snap_to_equipment(self):
+        for row in range(self.table.rowCount()):
+            spin_wt = self.table.cellWidget(row, 5)
+            target = spin_wt.value()
+            if target > 0:
+                # Uses the user's specific inventory to find achievable weights
+                valid_weight = PlateCalculator.get_closest_valid_weight(target, self.user_id)
+                spin_wt.setValue(valid_weight)
 
     def get_final_data(self):
         final_data = []
@@ -204,10 +223,11 @@ class ProgramSandboxView(BaseView):
         self.txt_program_name.setPlaceholderText("Enter Program Name...")
         layout.addWidget(self.txt_program_name)
         
-        # REPLACED TABLE WITH DRAG/DROP LIST WIDGET
         self.schedule_list = ProgramScheduleList()
-        # Allows double click to delete an exercise from the schedule
         self.schedule_list.itemDoubleClicked.connect(self._remove_from_schedule) 
+
+        self.schedule_list.scheduleChanged.connect(self._trigger_live_feedback)
+
         layout.addWidget(self.schedule_list)
         
         self.lbl_fatigue = QLabel("Daily Volume: Safe")
@@ -304,7 +324,7 @@ class ProgramSandboxView(BaseView):
             QMessageBox.warning(self, "Error", "Your schedule is empty!")
             return
 
-        dialog = FinalizeProgramDialog(exercises_data, self)
+        dialog = FinalizeProgramDialog(exercises_data, self.current_user_id, self)
         if dialog.exec():
             final_data = dialog.get_final_data()
             WorkoutDatabaseManager.save_sandbox_program(

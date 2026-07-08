@@ -5,7 +5,6 @@ from PyQt6.QtCore import QRunnable, QThreadPool, pyqtSlot
 
 from core.db_operations import WorkoutDatabaseManager
 from modules.integrations.fitbit_client import FitbitClient
-from core.database import get_connection
 from core.events import event_bus
 
 class FitbitSyncWorker(QRunnable):

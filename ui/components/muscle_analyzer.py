@@ -6,7 +6,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
 
-from core.database import get_connection
+from core.db_operations import WorkoutDatabaseManager
 
 class MuscleCoverageDialog(QDialog):
     def __init__(self, template_id, template_name, parent=None):
@@ -24,21 +24,8 @@ class MuscleCoverageDialog(QDialog):
         self._analyze_coverage(template_id)
 
     def _analyze_coverage(self, template_id):
-        conn = get_connection()
-        cursor = conn.cursor()
+        exercises = WorkoutDatabaseManager.get_routine_exercises(template_id)
         
-        # Join the routine layout with the master exercise dictionary
-        cursor.execute('''
-            SELECT r.target_sets, e.primary_muscle, e.secondary_muscles
-            FROM routine_exercises r
-            JOIN exercises e ON r.exercise_name = e.name
-            WHERE r.template_id = ?
-        ''', (template_id,))
-        
-        exercises = cursor.fetchall()
-        conn.close()
-
-        # Tally the volume
         volume_map = {
             "Chest": 0, "Back": 0, "Quads": 0, "Hamstrings": 0, 
             "Calves": 0, "Shoulders": 0, "Biceps": 0, "Triceps": 0, "Core": 0
@@ -46,12 +33,9 @@ class MuscleCoverageDialog(QDialog):
 
         for ex in exercises:
             sets = ex['target_sets']
-            
-            # Primary gets 1.0x points per set
             if ex['primary_muscle'] in volume_map:
                 volume_map[ex['primary_muscle']] += sets
                 
-            # Secondaries get 0.5x points per set
             if ex['secondary_muscles']:
                 secondaries = [s.strip() for s in ex['secondary_muscles'].split(',')]
                 for sec in secondaries:

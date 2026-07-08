@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from core.database import get_connection
 from core.db_operations import WorkoutDatabaseManager
 from core.events import event_bus
 from ui.components.muscle_analyzer import MuscleCoverageDialog
@@ -89,12 +88,8 @@ class RoutineBuilderView(QWidget):
 
     def refresh_data(self):
         self.workout_list.blockSignals(True)
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name, is_active FROM routine_templates")
-        self.all_templates = cursor.fetchall()
-        conn.close()
-
+        # Use Manager instead of Raw SQL
+        self.all_templates = WorkoutDatabaseManager.get_all_templates()
         ex_data = WorkoutDatabaseManager.get_all_exercises()
         self.exercise_bank = [ex['name'] for ex in ex_data]
         self._filter_splits(self.search_splits.text())
@@ -114,13 +109,11 @@ class RoutineBuilderView(QWidget):
         template_id = self.workout_list.item(index).data(100)
         self.exercise_table.setRowCount(0)
         
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM routine_exercises WHERE template_id = ?", (template_id,))
-        for row, ex in enumerate(cursor.fetchall()):
+        # Use Manager instead of Raw SQL
+        exercises = WorkoutDatabaseManager.get_routine_exercises(template_id)
+        for row, ex in enumerate(exercises):
             self.exercise_table.insertRow(row)
-            self._add_validated_row(row, ex['exercise_name'], ex['target_sets'], ex['target_reps_min'], ex['target_reps_max'], ex['target_weight'], ex['rest_seconds'])
-        conn.close()
+            self._add_validated_row(row, ex['name'], ex['target_sets'], ex['target_reps_min'], ex['target_reps_max'], ex['target_weight'], ex['rest_seconds'])
 
     def _add_validated_row(self, row, ex_name, sets=3, min_r=8, max_r=10, weight=0.0, rest=90):
         # 0. REORDER CONTROLS

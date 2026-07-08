@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCalendarWidget, QMessageBox
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QThreadPool
 from PyQt6.QtGui import QTextCharFormat, QColor
 
 import matplotlib
@@ -12,9 +12,10 @@ from matplotlib.figure import Figure
 import numpy as np
 
 from core.db_operations import WorkoutDatabaseManager
+from core.events import event_bus
 from ui.components.body_heatmap import AnatomicalHeatmap
 from ui.views.base_view import BaseView
-from core.events import event_bus
+from utils.threads import Worker
 
 class DashboardView(BaseView):
     def __init__(self, parent=None):
@@ -69,6 +70,7 @@ class DashboardView(BaseView):
         self.exercise_dropdown.blockSignals(True)
         self.exercise_dropdown.clear()
         
+        self.exercise_dropdown.addItem("Overview: Total Weekly Volume (Tonnage)")
         self.exercise_dropdown.addItem("Overview: Weight Loss vs. Calisthenics Strength")
         self.exercise_dropdown.addItems(exercises)
         self.exercise_dropdown.blockSignals(False)
@@ -88,15 +90,25 @@ class DashboardView(BaseView):
             self.calendar.setDateTextFormat(qdate, fmt)
 
     def _plot_trend_data(self, selection: str):
-        self.fig.clear()
-        self.ax = self.fig.add_subplot(111)
+        # 1. UI Feedback Layer
+        self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
-        self.fig.patch.set_facecolor('#1e1e1e')
+        self.ax.text(0.5, 0.5, 'Crunching Dataset...', color='white', 
+                     fontsize=14, ha='center', va='center', transform=self.ax.transAxes)
+        self.canvas.draw()
         
+        # 2. Routing to correct worker
         if selection == "Overview: Weight Loss vs. Calisthenics Strength":
-            self._plot_bw_vs_calisthenics()
+            worker = Worker(self._fetch_bw_vs_cal_data)
+            worker.signals.result.connect(self._render_bw_vs_cal)
+        elif selection == "Overview: Total Weekly Volume (Tonnage)":
+            worker = Worker(self._fetch_tonnage_data)
+            worker.signals.result.connect(self._render_tonnage)
         else:
-            self._plot_1rm_standard(selection) 
+            worker = Worker(self._fetch_1rm_data, selection)
+            worker.signals.result.connect(lambda res: self._render_1rm_data(selection, res))
+            
+        QThreadPool.globalInstance().start(worker)
 
     def _show_workout_summary(self, qdate):
         date_str = qdate.toString("yyyy-MM-dd")
@@ -119,9 +131,31 @@ class DashboardView(BaseView):
         QMessageBox.information(self, f"Workout Details: {date_str}", msg)
     
     def _plot_bw_vs_calisthenics(self):
-        bw_data = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id) 
-        cal_data = WorkoutDatabaseManager.get_calisthenics_volume_trend(self.current_user_id) 
+        # 1. Update UI to show it is loading so user knows something is happening
+        self.ax.clear()
+        self.ax.set_facecolor('#1e1e1e')
+        self.ax.text(0.5, 0.5, 'Loading Dataset...', color='white', 
+                     fontsize=14, ha='center', va='center', transform=self.ax.transAxes)
+        self.canvas.draw()
+        
+        # 2. Send the Heavy Lifting to a Background Thread
+        worker = Worker(self._fetch_bw_vs_cal_data)
+        worker.signals.result.connect(self._render_bw_vs_cal)
+        QThreadPool.globalInstance().start(worker)
 
+    def _fetch_bw_vs_cal_data(self):
+        """Runs in the background thread."""
+        bw = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id) 
+        cal = WorkoutDatabaseManager.get_calisthenics_volume_trend(self.current_user_id) 
+        return bw, cal
+
+    def _render_bw_vs_cal(self, data):
+        """Fires on the Main UI Thread when background data fetch finishes."""
+        bw_data, cal_data = data
+
+        self.ax.clear()
+        self.ax.set_facecolor('#1e1e1e')
+        
         if not bw_data and not cal_data:
             self.canvas.draw(); return
             
@@ -156,16 +190,19 @@ class DashboardView(BaseView):
         self.fig.tight_layout()
         self.canvas.draw()
 
-    def _plot_1rm_standard(self, exercise_name: str):
-        if not exercise_name: return
+    def _fetch_1rm_data(self, exercise_name: str):
+        return WorkoutDatabaseManager.get_1rm_trends(self.current_user_id, exercise_name)
+
+    def _render_1rm_data(self, exercise_name: str, data: dict):
         self.ax.clear()
         self.ax.set_facecolor('#1e1e1e')
         self.ax.tick_params(axis='both', colors='white', labelcolor='white')
         self.ax.xaxis.label.set_color('white'); self.ax.yaxis.label.set_color('white')
         for spine in self.ax.spines.values(): spine.set_edgecolor('#555555')
 
-        data = WorkoutDatabaseManager.get_1rm_trends(self.current_user_id, exercise_name)
-        if not data: self.canvas.draw(); return
+        if not data:
+            self.canvas.draw()
+            return
 
         dates = list(data.keys())
         weights = list(data.values())
@@ -193,3 +230,30 @@ class DashboardView(BaseView):
 
         self.fig.tight_layout()
         self.canvas.draw()
+
+    def _fetch_tonnage_data(self):
+        return WorkoutDatabaseManager.get_weekly_tonnage(self.current_user_id)
+
+    def _render_tonnage(self, data: dict):
+        self.ax.clear()
+        self.ax.set_facecolor('#1e1e1e')
+        self.ax.tick_params(axis='both', colors='white', labelcolor='white')
+        self.ax.xaxis.label.set_color('white'); self.ax.yaxis.label.set_color('white')
+        for spine in self.ax.spines.values(): spine.set_edgecolor('#555555')
+
+        if not data:
+            self.canvas.draw()
+            return
+            
+        weeks = list(data.keys())
+        tonnages = list(data.values())
+        
+        self.ax.bar(weeks, tonnages, color='#4CAF50', alpha=0.8, edgecolor='black')
+        self.ax.set_title("Total Weekly Volume (Tonnage)", color='white', pad=15)
+        self.ax.set_ylabel("Total Lbs Lifted", color='white')
+        self.ax.set_xlabel("Week Number of the Year", color='white')
+
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+        

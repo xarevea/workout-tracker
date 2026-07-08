@@ -107,7 +107,6 @@ class AspectRatioSvgWidget(QWidget):
 
 
 class MuscleMapper:
-    # (Unchanged)
     REGION_MAP = {
         "Chest": ["chest"],
         "Back": ["upper-back", "latissimus", "trapezius", "lower-back"],

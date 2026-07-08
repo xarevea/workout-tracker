@@ -14,6 +14,8 @@ from ui.components.minimap import WorkoutMinimap
 from ui.views.base_view import BaseView
 from ui.views.bodyweight_hub import BodyweightHubView
 from ui.views.dashboard import DashboardView
+from ui.views.equipment import EquipmentView
+from ui.views.exercise_dictionary import ExerciseDictionaryView
 from ui.views.history import WorkoutHistoryView
 from ui.views.program_sandbox import ProgramSandboxView
 from ui.views.routine_builder import RoutineBuilderView
@@ -270,7 +272,15 @@ class MainWindow(QMainWindow):
         self.bodyweight_view = BodyweightHubView()
         self._add_stacked_widget(self.bodyweight_view, "Bodyweight Hub")
         
-        # 6. Settings
+        # 6. Exercise Bank
+        self.exercise_dict_view = ExerciseDictionaryView()
+        self._add_stacked_widget(self.exercise_dict_view, "Exercise Bank")
+        
+        # 7. My Garage
+        self.equipment_view = EquipmentView()
+        self._add_stacked_widget(self.equipment_view, "My Garage")
+        
+        # 8. Settings
         self.settings_view = SettingsView()
         self._add_stacked_widget(self.settings_view, "Settings")
         

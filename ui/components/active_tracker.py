@@ -8,8 +8,8 @@ from PyQt6.QtWidgets import (
     QGroupBox, QScrollArea, QComboBox, QCheckBox,
     QListWidget, QListWidgetItem
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QThreadPool
-from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtCore import Qt, QTimer, QUrl, QThreadPool, QRectF
+from PyQt6.QtGui import QPainter, QPen, QColor, QFont
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import QSystemTrayIcon, QStyle
 
@@ -26,18 +26,36 @@ class MiniRestTimer(QWidget):
         super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(140, 140)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
         
-        self.lbl = QLabel("00:00")
-        self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl.setStyleSheet("color: white; font-size: 32px; font-weight: bold; background-color: rgba(0, 0, 0, 180); border-radius: 70px; border: 4px solid #FF9800;")
-        layout.addWidget(self.lbl)
-        
+        self.percentage = 1.0
+        self.time_str = "00:00"
         self.oldPos = self.pos()
 
-    def set_time(self, txt):
-        self.lbl.setText(txt)
+    def set_time(self, txt, percentage):
+        self.time_str = txt
+        self.percentage = max(0.0, min(1.0, percentage))
+        self.update() # Triggers paintEvent to redraw the circle
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Inner transparent-ish black circle
+        rect = QRectF(10, 10, self.width() - 20, self.height() - 20)
+        painter.setPen(QPen(QColor(0, 0, 0, 150), 8))
+        painter.setBrush(QColor(0, 0, 0, 180))
+        painter.drawEllipse(rect)
+        
+        # Outer progress ring (Orange)
+        painter.setPen(QPen(QColor("#FF9800"), 8, cap=Qt.PenCapStyle.RoundCap))
+        start_angle = 90 * 16 # 12 o'clock position (PyQt angles are in 1/16ths of a degree)
+        span_angle = int(-360 * self.percentage * 16) # Negative draws clockwise
+        painter.drawArc(rect, start_angle, span_angle)
+        
+        # Timer Text
+        painter.setPen(Qt.GlobalColor.white)
+        painter.setFont(QFont("Arial", 28, QFont.Weight.Bold))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.time_str)
 
     def mousePressEvent(self, event):
         self.oldPos = event.globalPosition().toPoint()
@@ -328,16 +346,18 @@ class ActiveTrackerWidget(QWidget):
             mins, secs = divmod(self.rest_seconds, 60)
             time_str = f"Resting: {mins:02d}:{secs:02d}"
             
-            # Show/Update Mini overlay if checked
+            # --- PROGRESS PERCENTAGE CALCULATION ---
+            current_ex = self.controller.get_current_exercise()
+            total_rest_target = current_ex.get('rest_seconds', 90) if current_ex else 90
+            pct = self.rest_seconds / total_rest_target if total_rest_target > 0 else 0.0
+
             if self.chk_mini_timer.isChecked():
                 if not self.mini_timer.isVisible(): self.mini_timer.show()
-                self.mini_timer.set_time(f"{mins:02d}:{secs:02d}")
+                self.mini_timer.set_time(f"{mins:02d}:{secs:02d}", pct)
 
-            # Update Local Timer
             self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #FF9800;")
-
-            # Update Global Header (Shows both current status AND total time)
+            
             self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
             self.global_timer_lbl.setStyleSheet("color: #FF9800; font-weight: bold; font-size: 16px;")
 

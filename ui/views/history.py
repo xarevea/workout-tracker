@@ -93,21 +93,17 @@ class ManualWorkoutEntryDialog(QDialog):
                 "is_warmup": False
             })
             
+        date_str = self.date_edit.date().toString("yyyy-MM-dd") + " 12:00:00"
+        
+        # Passes date_str directly now, removing need for the raw UPDATE query hack
         WorkoutDatabaseManager.save_completed_workout(
             user_id=self.user_id,
             workout_name=self.txt_name.text(),
             duration_minutes=self.spin_dur.value(),
             bodyweight=self.spin_bw.value(),
-            logs=logs
+            logs=logs,
+            date_str=date_str 
         )
-        
-        # Override the saved timestamp to match the selected DateEdit
-        # (A slight hack, but keeps db_operations clean)
-        date_str = self.date_edit.date().toString("yyyy-MM-dd") + " 12:00:00"
-        conn = get_connection()
-        conn.execute("UPDATE workouts SET date = ? WHERE id = (SELECT MAX(id) FROM workouts)", (date_str,))
-        conn.commit(); conn.close()
-        
         self.accept()
      
 

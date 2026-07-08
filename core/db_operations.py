@@ -1,387 +1,231 @@
-# core/db_operations.py
-from typing import List, Dict, Optional
-import sqlite3
 
-from core.database import get_connection, get_db_connection
+from typing import List, Dict
+from sqlalchemy import func
+from datetime import datetime
+
+from core.database import get_db_session
+from core.models import (
+    User, Exercise, RoutineTemplate, RoutineExercise, Equipment, Workout, 
+    WorkoutLog, BodyweightLog, Program, ProgramDay, ApiIntegration
+)
 
 class WorkoutDatabaseManager:
-    # --- UI DECOUPLED METHODS ---
     @staticmethod
     def get_all_exercises() -> list:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, primary_muscle, secondary_muscles FROM exercises ORDER BY name ASC")
-        res = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return res
+        with get_db_session() as session:
+            exercises = session.query(Exercise).order_by(Exercise.name.asc()).all()
+            return [{'id': e.id, 'name': e.name, 'category': e.category, 'primary_muscle': e.primary_muscle, 
+                     'secondary_muscles': e.secondary_muscles, 'cues': e.cues} for e in exercises]
 
     @staticmethod
+    def add_exercise(name: str, primary: str, secondary: str, cues: str = ""):
+        with get_db_session() as session:
+            if not session.query(Exercise).filter_by(name=name).first():
+                session.add(Exercise(name=name, category='Hybrid', primary_muscle=primary, secondary_muscles=secondary, cues=cues))
+                
+    @staticmethod
     def save_routine_exercises(template_id: int, exercises_data: list):
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM routine_exercises WHERE template_id = ?", (template_id,))
-        for ex in exercises_data:
-            cursor.execute('''
-                INSERT INTO routine_exercises 
-                (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds, is_bodyweight)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-            ''', (template_id, ex['name'], ex['sets'], ex['min_reps'], ex['max_reps'], ex['weight'], ex['rest']))
-        conn.commit()
-        conn.close()
+        with get_db_session() as session:
+            session.query(RoutineExercise).filter_by(template_id=template_id).delete()
+            for ex in exercises_data:
+                new_ex = RoutineExercise(
+                    template_id=template_id, exercise_name=ex['name'],
+                    target_sets=ex['sets'], target_reps_min=ex['min_reps'],
+                    target_reps_max=ex['max_reps'], target_weight=ex['weight'],
+                    rest_seconds=ex['rest']
+                )
+                session.add(new_ex)
 
     @staticmethod
     def update_routine_targets(template_id: int, adjustments: dict):
-        conn = get_connection()
-        cursor = conn.cursor()
-        for ex_name, data in adjustments.items():
-            cursor.execute('''
-                UPDATE routine_exercises
-                SET target_weight = ?, target_reps_min = ?, target_reps_max = ?
-                WHERE template_id = ? AND exercise_name = ?
-            ''', (data['weight'], data['min_reps'], data['max_reps'], template_id, ex_name))
-        conn.commit()
-        conn.close()
+        with get_db_session() as session:
+            for ex_name, data in adjustments.items():
+                record = session.query(RoutineExercise).filter_by(template_id=template_id, exercise_name=ex_name).first()
+                if record:
+                    record.target_weight = data['weight']
+                    record.target_reps_min = data['min_reps']
+                    record.target_reps_max = data['max_reps']
+
+    @staticmethod
+    def add_equipment(user_id: int, name: str, weight: float, qty: int, is_barbell: bool):
+        with get_db_session() as session:
+            if not session.query(Equipment).filter_by(user_id=user_id, name=name).first():
+                session.add(Equipment(user_id=user_id, name=name, weight_lbs=weight, quantity=qty, is_barbell=is_barbell))
 
     @staticmethod
     def get_equipment_inventory(user_id: int) -> dict:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM equipment WHERE user_id = ?", (user_id,))
-        items = cursor.fetchall()
-        conn.close()
-        inventory = {'barbell': 45.0, 'plates': []}
-        for item in items:
-            if item['is_barbell']: inventory['barbell'] = item['weight_lbs']
-            else: inventory['plates'].extend([item['weight_lbs']] * (item['quantity'] // 2))
-        inventory['plates'].sort(reverse=True)
-        return inventory
+        with get_db_session() as session:
+            items = session.query(Equipment).filter_by(user_id=user_id).all()
+            inventory = {'barbell': 45.0, 'plates': [], 'raw_items': []}
+            for item in items:
+                inventory['raw_items'].append({'name': item.name, 'weight_lbs': item.weight_lbs, 'quantity': item.quantity, 'is_barbell': item.is_barbell})
+                if item.is_barbell: 
+                    inventory['barbell'] = item.weight_lbs
+                else: 
+                    inventory['plates'].extend([item.weight_lbs] * (item.quantity // 2))
+            inventory['plates'].sort(reverse=True)
+            return inventory
 
     @staticmethod
-    def save_completed_workout(user_id: int, workout_name: str, duration_minutes: int, bodyweight: float, logs: list) -> int:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO workouts (user_id, name, duration_minutes, bodyweight_at_time) VALUES (?, ?, ?, ?)", 
-                       (user_id, workout_name, duration_minutes, bodyweight))
-        workout_id = cursor.lastrowid
-        
-        for log in logs:
-            cursor.execute("SELECT id FROM exercises WHERE name = ?", (log['exercise'],))
-            ex_row = cursor.fetchone()
-            if not ex_row: continue
+    def save_completed_workout(user_id: int, workout_name: str, duration_minutes: int, bodyweight: float, logs: list, date_str: str = None) -> int:
+        with get_db_session() as session:
+            dt = date_str if date_str else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            workout = Workout(user_id=user_id, name=workout_name, duration_minutes=duration_minutes, bodyweight_at_time=bodyweight, date=dt)
+            session.add(workout)
+            session.flush() # Get the new ID
             
-            cursor.execute('''
-                INSERT INTO workout_logs (workout_id, exercise_id, set_number, reps, weight_lbs, rpe, is_warmup)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (workout_id, ex_row['id'], log['set'], log['reps'], log['weight'], log['rpe'], log.get('is_warmup', False)))
-            
-        conn.commit()
-        conn.close()
-        return workout_id
-    
+            for log in logs:
+                ex = session.query(Exercise).filter_by(name=log['exercise']).first()
+                if not ex: continue
+                set_num = 0 if log.get('is_warmup', False) else log['set']
+                session.add(WorkoutLog(
+                    workout_id=workout.id, exercise_id=ex.id, set_number=set_num,
+                    reps=log['reps'], weight_lbs=log['weight'], rpe=log['rpe'], is_warmup=log.get('is_warmup', False)
+                ))
+            return workout.id
+
     @staticmethod
     def get_weekly_tonnage(user_id: int) -> dict:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT 
-                strftime('%W', w.date) as week,
-                SUM(
-                    l.reps * CASE 
-                        WHEN e.category = 'Bodyweight' THEN (w.bodyweight_at_time + l.weight_lbs)
-                        ELSE l.weight_lbs
-                    END
-                ) as total_tonnage
-            FROM workout_logs l
-            JOIN workouts w ON l.workout_id = w.id
-            JOIN exercises e ON l.exercise_id = e.id
-            WHERE w.user_id = ?
-            GROUP BY week
-            ORDER BY week ASC
-        ''', (user_id,))
-        results = cursor.fetchall()
-        conn.close()
-        return {row['week']: row['total_tonnage'] for row in results}
+        with get_db_session() as session:
+            results = session.query(
+                func.strftime('%W', Workout.date).label('week'),
+                func.sum(WorkoutLog.reps * WorkoutLog.weight_lbs).label('tonnage')
+            ).join(WorkoutLog, Workout.id == WorkoutLog.workout_id)\
+             .filter(Workout.user_id == user_id, WorkoutLog.is_warmup == False)\
+             .group_by('week').order_by('week').all()
+            return {r.week: r.tonnage for r in results}
 
     @staticmethod
     def get_1rm_trends(user_id: int, exercise_name: str) -> dict:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT w.date, l.weight_lbs, l.reps
-            FROM workout_logs l
-            JOIN workouts w ON l.workout_id = w.id
-            JOIN exercises e ON l.exercise_id = e.id
-            WHERE e.name = ? AND w.user_id = ?
-            ORDER BY w.date ASC
-        ''', (exercise_name, user_id))
-        
-        results = cursor.fetchall()
-        conn.close()
-        
-        trends = {}
-        for row in results:
-            date = row['date'].split(' ')[0] 
-            estimated_1rm = row['weight_lbs'] * (1 + (row['reps'] / 30.0))
-            if date not in trends or estimated_1rm > trends[date]:
-                trends[date] = estimated_1rm
-        return trends
+        with get_db_session() as session:
+            results = session.query(Workout.date, WorkoutLog.weight_lbs, WorkoutLog.reps)\
+                .join(WorkoutLog, Workout.id == WorkoutLog.workout_id)\
+                .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
+                .filter(Exercise.name == exercise_name, Workout.user_id == user_id)\
+                .order_by(Workout.date.asc()).all()
+            
+            trends = {}
+            for date_val, weight, reps in results:
+                date = date_val.split(' ')[0] 
+                estimated_1rm = weight * (1 + (reps / 30.0))
+                if date not in trends or estimated_1rm > trends[date]:
+                    trends[date] = estimated_1rm
+            return trends
 
     @staticmethod
     def get_all_workout_dates(user_id: int) -> list:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT date(date) as w_date FROM workouts WHERE user_id = ?", (user_id,))
-        results = [row['w_date'] for row in cursor.fetchall()]
-        conn.close()
-        return results
+        with get_db_session() as session:
+            workouts = session.query(Workout.date).filter_by(user_id=user_id).all()
+            return list(set([w.date.split(' ')[0] for w in workouts]))
 
     @staticmethod
     def get_tracked_exercises(user_id: int) -> list:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT DISTINCT e.name 
-            FROM exercises e
-            JOIN workout_logs l ON e.id = l.exercise_id
-            JOIN workouts w ON l.workout_id = w.id
-            WHERE w.user_id = ?
-            ORDER BY e.name ASC
-        ''', (user_id,))
-        results = [row['name'] for row in cursor.fetchall()]
-        conn.close()
-        return results
+        with get_db_session() as session:
+            results = session.query(Exercise.name).distinct()\
+                .join(WorkoutLog, Exercise.id == WorkoutLog.exercise_id)\
+                .join(Workout, Workout.id == WorkoutLog.workout_id)\
+                .filter(Workout.user_id == user_id).order_by(Exercise.name.asc()).all()
+            return [r.name for r in results]
 
     @staticmethod
     def get_active_program_volume(user_id: int) -> dict:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT e.primary_muscle, e.secondary_muscles, r.target_sets
-            FROM program_days pd
-            JOIN programs p ON pd.program_id = p.id
-            JOIN routine_exercises r ON pd.template_id = r.template_id
-            JOIN exercises e ON r.exercise_name = e.name
-            WHERE p.user_id = ? AND p.is_active = 1 AND pd.is_deload = 0
-        ''', (user_id,))
-        exercises = cursor.fetchall()
-        conn.close()
+        with get_db_session() as session:
+            results = session.query(Exercise.primary_muscle, Exercise.secondary_muscles, RoutineExercise.target_sets)\
+                .join(RoutineExercise, RoutineExercise.exercise_name == Exercise.name)\
+                .join(ProgramDay, ProgramDay.template_id == RoutineExercise.template_id)\
+                .join(Program, Program.id == ProgramDay.program_id)\
+                .filter(Program.user_id == user_id, Program.is_active == True, ProgramDay.is_deload == False).all()
 
-        volume_map = {}
-        for ex in exercises:
-            sets = ex['target_sets']
-            pri = ex['primary_muscle']
-            
-            if pri:
-                volume_map[pri] = volume_map.get(pri, 0) + sets
-            if ex['secondary_muscles']:
-                for sec in [s.strip() for s in ex['secondary_muscles'].split(',')]:
-                    volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
-        return volume_map
+            volume_map = {}
+            for pri, sec, sets in results:
+                if pri: volume_map[pri] = volume_map.get(pri, 0) + sets
+                if sec:
+                    for s in [s.strip() for s in sec.split(',')]:
+                        volume_map[s] = volume_map.get(s, 0) + (sets * 0.5)
+            return volume_map
 
     @staticmethod
     def get_routine_exercises(template_id: int) -> list:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT r.exercise_name as name, r.target_sets, r.target_reps_min, r.target_reps_max, 
-                   r.target_weight, r.rest_seconds, e.primary_muscle, e.secondary_muscles, e.cues
-            FROM routine_exercises r
-            JOIN exercises e ON r.exercise_name = e.name
-            WHERE r.template_id = ?
-        ''', (template_id,))
-        exercises = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return exercises
+        with get_db_session() as session:
+            results = session.query(RoutineExercise, Exercise)\
+                .join(Exercise, RoutineExercise.exercise_name == Exercise.name)\
+                .filter(RoutineExercise.template_id == template_id).all()
+            
+            return [{
+                'name': r.RoutineExercise.exercise_name,
+                'target_sets': r.RoutineExercise.target_sets,
+                'target_reps_min': r.RoutineExercise.target_reps_min,
+                'target_reps_max': r.RoutineExercise.target_reps_max,
+                'target_weight': r.RoutineExercise.target_weight,
+                'rest_seconds': r.RoutineExercise.rest_seconds,
+                'primary_muscle': r.Exercise.primary_muscle,
+                'secondary_muscles': r.Exercise.secondary_muscles,
+                'cues': r.Exercise.cues
+            } for r in results]
 
-    # --- BODYWEIGHT HUB METHODS ---
     @staticmethod
     def log_bodyweight(user_id: int, date_str: str, weight: float):
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO bodyweight_log (user_id, date, weight_lbs) VALUES (?, ?, ?)", (user_id, date_str, weight))
-        conn.commit()
-        conn.close()
-        
+        with get_db_session() as session:
+            session.add(BodyweightLog(user_id=user_id, date=date_str, weight_lbs=weight))
+            
     @staticmethod
     def delete_bodyweight_log(user_id: int, date_str: str):
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM bodyweight_log WHERE user_id = ? AND date = ?", (user_id, date_str))
-        conn.commit()
-        conn.close()
+        with get_db_session() as session:
+            session.query(BodyweightLog).filter_by(user_id=user_id, date=date_str).delete()
 
     @staticmethod
-    def get_bodyweight_history(user_id: int):
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT date, weight_lbs FROM bodyweight_log WHERE user_id = ? ORDER BY date ASC", (user_id,))
-        res = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return res
+    def get_bodyweight_history(user_id: int) -> list:
+        with get_db_session() as session:
+            logs = session.query(BodyweightLog).filter_by(user_id=user_id).order_by(BodyweightLog.date.asc()).all()
+            return [{'date': l.date, 'weight_lbs': l.weight_lbs} for l in logs]
 
     @staticmethod
     def get_latest_bodyweight(user_id: int) -> float:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT weight_lbs FROM bodyweight_log WHERE user_id = ? ORDER BY date DESC LIMIT 1", (user_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return row['weight_lbs'] if row else 185.0
+        with get_db_session() as session:
+            log = session.query(BodyweightLog).filter_by(user_id=user_id).order_by(BodyweightLog.date.desc()).first()
+            return log.weight_lbs if log else 185.0
 
     @staticmethod
     def get_calisthenics_volume_trend(user_id: int):
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT date(w.date) as date_val, SUM(l.reps * (w.bodyweight_at_time + l.weight_lbs)) as tonnage
-            FROM workout_logs l
-            JOIN workouts w ON l.workout_id = w.id
-            JOIN exercises e ON l.exercise_id = e.id
-            WHERE e.category = 'Bodyweight' AND l.is_warmup = 0 AND w.user_id = ?
-            GROUP BY date_val ORDER BY date_val ASC
-        ''', (user_id,))
-        res = {row['date_val']: row['tonnage'] for row in cursor.fetchall()}
-        conn.close()
-        return res
-
-    # --- PROGRAM BUILDER METHODS ---
-    @staticmethod
-    def get_all_templates():
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name FROM routine_templates ORDER BY name ASC")
-        res = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return res
+        with get_db_session() as session:
+            results = session.query(
+                func.date(Workout.date).label('date_val'),
+                func.sum(WorkoutLog.reps * (Workout.bodyweight_at_time + WorkoutLog.weight_lbs)).label('tonnage')
+            ).join(WorkoutLog, Workout.id == WorkoutLog.workout_id)\
+             .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
+             .filter(Exercise.category == 'Bodyweight', WorkoutLog.is_warmup == False, Workout.user_id == user_id)\
+             .group_by('date_val').order_by('date_val').all()
+            return {r.date_val: r.tonnage for r in results}
 
     @staticmethod
-    def save_program(name: str, cycle_length: int, days_data: list):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute("INSERT OR REPLACE INTO programs (name, cycle_length_days) VALUES (?, ?)", (name, cycle_length))
-            cursor.execute("SELECT id FROM programs WHERE name=?", (name,))
-            program_id = cursor.fetchone()['id']
-            
-            cursor.execute("DELETE FROM program_days WHERE program_id=?", (program_id,))
-            for day in days_data:
-                cursor.execute('''
-                    INSERT INTO program_days (program_id, day_number, template_id, is_deload)
-                    VALUES (?, ?, ?, ?)
-                ''', (program_id, day['day_number'], day['template_id'], day['is_deload']))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
-            
-    @staticmethod
-    def get_program_volume_map(program_name: str):
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT e.primary_muscle, e.secondary_muscles, SUM(r.target_sets * r.target_reps_max) as total_reps
-            FROM program_days pd
-            JOIN programs p ON pd.program_id = p.id
-            JOIN routine_exercises r ON pd.template_id = r.template_id
-            JOIN exercises e ON r.exercise_name = e.name
-            WHERE p.name = ? AND pd.is_deload = 0
-        ''', (program_name,))
-        rows = cursor.fetchall()
-        conn.close()
-        
-        volume_map = {}
-        for row in rows:
-            if not row['primary_muscle']: continue
-            pri = row['primary_muscle']
-            vol = row['total_reps'] or 0
-            volume_map[pri] = volume_map.get(pri, 0) + vol
-            if row['secondary_muscles']:
-                for sec in [s.strip() for s in row['secondary_muscles'].split(',')]:
-                    volume_map[sec] = volume_map.get(sec, 0) + (vol * 0.5)
-        return volume_map
-
-    @staticmethod
-    def calculate_muscle_volume(exercises_data: list) -> dict:
-        if not exercises_data:
-            return {}
-        conn = get_connection()
-        cursor = conn.cursor()
-        volume_map = {}
-        for ex in exercises_data:
-            name = ex.get('name')
-            sets = ex.get('sets', 0)
-            cursor.execute("SELECT primary_muscle, secondary_muscles FROM exercises WHERE name = ?", (name,))
-            row = cursor.fetchone()
-            if row:
-                primary = row['primary_muscle']
-                if primary:
-                    volume_map[primary] = volume_map.get(primary, 0) + sets
-                secondary_str = row['secondary_muscles']
-                if secondary_str:
-                    secondaries = [s.strip() for s in secondary_str.split(',') if s.strip()]
-                    for sec in secondaries:
-                        volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
-        conn.close()
-        return volume_map
-
-    @staticmethod
-    def get_all_users() -> List[Dict]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, username FROM users ORDER BY id")
-            return [dict(row) for row in cursor.fetchall()]
-
-    @staticmethod
-    def get_programs_for_user(user_id: int) -> List[Dict]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, name, is_active FROM programs WHERE user_id = ?", (user_id,))
-            return [dict(row) for row in cursor.fetchall()]
-
-    @staticmethod
-    def set_active_program(user_id: int, program_id: int):
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE programs SET is_active = 0 WHERE user_id = ?", (user_id,))
-            if program_id is not None:
-                cursor.execute("UPDATE programs SET is_active = 1 WHERE id = ?", (program_id,))
-
-
-   # --- ADD TO: core/db_operations.py ---
+    def get_all_templates() -> list:
+        with get_db_session() as session:
+            templates = session.query(RoutineTemplate).order_by(RoutineTemplate.name.asc()).all()
+            return [{'id': t.id, 'name': t.name, 'is_active': t.is_active} for t in templates]
 
     @staticmethod
     def get_program_templates(program_id: int) -> list:
-        """Fetches only the routine templates associated with a specific program."""
         if not program_id: return []
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT t.id, t.name, pd.day_number
-            FROM program_days pd
-            JOIN routine_templates t ON pd.template_id = t.id
-            WHERE pd.program_id = ?
-            ORDER BY pd.day_number ASC
-        ''', (program_id,))
-        res = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return res
+        with get_db_session() as session:
+            results = session.query(RoutineTemplate.id, RoutineTemplate.name, ProgramDay.day_number)\
+                .join(ProgramDay, ProgramDay.template_id == RoutineTemplate.id)\
+                .filter(ProgramDay.program_id == program_id)\
+                .order_by(ProgramDay.day_number.asc()).all()
+            return [{'id': r.id, 'name': r.name, 'day_number': r.day_number} for r in results]
 
     @staticmethod
     def save_sandbox_program(user_id: int, program_id: int, program_name: str, pool_data: list):
-        """Creates or overwrites a program and auto-generates daily templates based on the Sandbox UI."""
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
-            # 1. Upsert Program
+        with get_db_session() as session:
             if program_id:
-                cursor.execute("UPDATE programs SET name = ? WHERE id = ?", (program_name, program_id))
+                prog = session.query(Program).filter_by(id=program_id).first()
+                prog.name = program_name
             else:
-                cursor.execute("INSERT INTO programs (user_id, name) VALUES (?, ?)", (user_id, program_name))
-                program_id = cursor.lastrowid
+                prog = Program(user_id=user_id, name=program_name)
+                session.add(prog)
+                session.flush()
+                program_id = prog.id
             
-            cursor.execute("DELETE FROM program_days WHERE program_id = ?", (program_id,))
+            session.query(ProgramDay).filter_by(program_id=program_id).delete()
             
             from collections import defaultdict
             days = defaultdict(list)
@@ -393,88 +237,136 @@ class WorkoutDatabaseManager:
                 day_num = day_map.get(day_str, 1)
                 t_name = f"{program_name} - {day_str}"
                 
-                # 2. Upsert Template for this day
-                cursor.execute("INSERT OR IGNORE INTO routine_templates (name, is_active) VALUES (?, 1)", (t_name,))
-                cursor.execute("SELECT id FROM routine_templates WHERE name = ?", (t_name,))
-                t_id = cursor.fetchone()['id']
+                template = session.query(RoutineTemplate).filter_by(name=t_name).first()
+                if not template:
+                    template = RoutineTemplate(name=t_name, is_active=True)
+                    session.add(template)
+                    session.flush()
                 
-                cursor.execute("DELETE FROM routine_exercises WHERE template_id = ?", (t_id,))
+                session.query(RoutineExercise).filter_by(template_id=template.id).delete()
                 
-                # 3. Insert Exercises (Using detailed data from the Finalize GUI)
                 for ex in ex_list:
-                    cursor.execute('''INSERT INTO routine_exercises 
-                                      (template_id, exercise_name, target_sets, target_reps_min, target_reps_max, target_weight, rest_seconds) 
-                                      VALUES (?, ?, ?, ?, ?, ?, ?)''', 
-                                      (t_id, ex['exercise'], ex.get('sets', 3), 
-                                       ex.get('min_reps', 8), ex.get('max_reps', 12), 
-                                       ex.get('weight', 0.0), ex.get('rest', 90)))
+                    session.add(RoutineExercise(
+                        template_id=template.id, exercise_name=ex['exercise'], target_sets=ex.get('sets', 3), 
+                        target_reps_min=ex.get('min_reps', 8), target_reps_max=ex.get('max_reps', 12), 
+                        target_weight=ex.get('weight', 0.0), rest_seconds=ex.get('rest', 90)
+                    ))
                     
-                # 4. Map Day to Program
-                cursor.execute("INSERT INTO program_days (program_id, day_number, template_id) VALUES (?, ?, ?)", (program_id, day_num, t_id))
-                
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
+                session.add(ProgramDay(program_id=program_id, day_number=day_num, template_id=template.id))
 
     @staticmethod
     def get_sandbox_program_data(program_id: int) -> list:
-        """Loads a program back into the Sandbox editor format."""
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT pd.day_number, re.exercise_name, re.target_sets
-            FROM program_days pd
-            JOIN routine_templates t ON pd.template_id = t.id
-            JOIN routine_exercises re ON t.id = re.template_id
-            WHERE pd.program_id = ?
-            ORDER BY pd.day_number ASC
-        ''', (program_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [{'day': f"Day {r['day_number']}", 'exercise': r['exercise_name'], 'sets': r['target_sets']} for r in rows]
+        with get_db_session() as session:
+            results = session.query(ProgramDay.day_number, RoutineExercise.exercise_name, RoutineExercise.target_sets)\
+                .join(RoutineTemplate, RoutineTemplate.id == ProgramDay.template_id)\
+                .join(RoutineExercise, RoutineExercise.template_id == RoutineTemplate.id)\
+                .filter(ProgramDay.program_id == program_id).order_by(ProgramDay.day_number.asc()).all()
+            return [{'day': f"Day {r.day_number}", 'exercise': r.exercise_name, 'sets': r.target_sets} for r in results]
 
     @staticmethod
     def get_workout_history(user_id: int) -> list:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, date, name, duration_minutes FROM workouts WHERE user_id = ? ORDER BY date DESC", (user_id,))
-        res = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return res
+        with get_db_session() as session:
+            workouts = session.query(Workout).filter_by(user_id=user_id).order_by(Workout.date.desc()).all()
+            return [{'id': w.id, 'date': w.date, 'name': w.name, 'duration_minutes': w.duration_minutes} for w in workouts]
 
     @staticmethod
     def get_workout_logs(workout_id: int) -> list:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT l.id, e.name as exercise, l.set_number, l.reps, l.weight_lbs, l.rpe, l.is_warmup
-            FROM workout_logs l
-            JOIN exercises e ON l.exercise_id = e.id
-            WHERE l.workout_id = ?
-            ORDER BY l.id ASC
-        ''', (workout_id,))
-        res = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return res
+        with get_db_session() as session:
+            results = session.query(WorkoutLog, Exercise.name)\
+                .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
+                .filter(WorkoutLog.workout_id == workout_id).order_by(WorkoutLog.id.asc()).all()
+            return [{'id': r.WorkoutLog.id, 'exercise': r.name, 'set_number': r.WorkoutLog.set_number, 
+                     'reps': r.WorkoutLog.reps, 'weight_lbs': r.WorkoutLog.weight_lbs, 'rpe': r.WorkoutLog.rpe, 
+                     'is_warmup': r.WorkoutLog.is_warmup} for r in results]
 
     @staticmethod
     def delete_workout(workout_id: int):
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM workout_logs WHERE workout_id = ?", (workout_id,))
-        cursor.execute("DELETE FROM workouts WHERE id = ?", (workout_id,))
-        conn.commit()
-        conn.close() 
+        with get_db_session() as session:
+            session.query(Workout).filter_by(id=workout_id).delete() # Cascade delete handles logs
+
+    @staticmethod
+    def get_all_users() -> list:
+        with get_db_session() as session:
+            users = session.query(User).order_by(User.id.asc()).all()
+            return [{'id': u.id, 'username': u.username} for u in users]
 
     @staticmethod
     def create_user(username: str) -> int:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (username) VALUES (?)", (username,))
-        user_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return user_id
+        with get_db_session() as session:
+            user = User(username=username)
+            session.add(user)
+            session.flush()
+            return user.id
+
+    @staticmethod
+    def get_programs_for_user(user_id: int) -> list:
+        with get_db_session() as session:
+            progs = session.query(Program).filter_by(user_id=user_id).all()
+            return [{'id': p.id, 'name': p.name, 'is_active': p.is_active} for p in progs]
+
+    @staticmethod
+    def set_active_program(user_id: int, program_id: int):
+        with get_db_session() as session:
+            session.query(Program).filter_by(user_id=user_id).update({"is_active": False})
+            if program_id:
+                session.query(Program).filter_by(id=program_id).update({"is_active": True})
+
+    @staticmethod
+    def calculate_muscle_volume(exercises_data: list) -> dict:
+        if not exercises_data: return {}
+        volume_map = {}
+        with get_db_session() as session:
+            for ex in exercises_data:
+                record = session.query(Exercise).filter_by(name=ex.get('name')).first()
+                if record:
+                    sets = ex.get('sets', 0)
+                    if record.primary_muscle:
+                        volume_map[record.primary_muscle] = volume_map.get(record.primary_muscle, 0) + sets
+                    if record.secondary_muscles:
+                        for sec in [s.strip() for s in record.secondary_muscles.split(',') if s.strip()]:
+                            volume_map[sec] = volume_map.get(sec, 0) + (sets * 0.5)
+        return volume_map
+
+    @staticmethod
+    def get_api_credentials(provider: str) -> dict:
+        with get_db_session() as session:
+            rec = session.query(ApiIntegration).filter_by(provider_name=provider).first()
+            return {'access_token': rec.access_token, 'refresh_token': rec.refresh_token} if rec else None
+
+    @staticmethod
+    def save_api_credentials(provider: str, access: str, refresh: str):
+        with get_db_session() as session:
+            rec = session.query(ApiIntegration).filter_by(provider_name=provider).first()
+            if rec:
+                rec.access_token = access
+                rec.refresh_token = refresh
+            else:
+                session.add(ApiIntegration(provider_name=provider, access_token=access, refresh_token=refresh))
+
+    @staticmethod
+    def get_user_equipment(user_id: int) -> list:
+        """Returns all equipment raw objects with IDs for the UI table."""
+        with get_db_session() as session:
+            items = session.query(Equipment).filter_by(user_id=user_id).order_by(Equipment.weight_lbs.desc()).all()
+            return [{'id': e.id, 'name': e.name, 'weight_lbs': e.weight_lbs, 'quantity': e.quantity, 'is_barbell': e.is_barbell} for e in items]
+
+    @staticmethod
+    def delete_equipment(equipment_id: int):
+        with get_db_session() as session:
+            session.query(Equipment).filter_by(id=equipment_id).delete()
+
+    @staticmethod
+    def update_exercise(ex_id: int, name: str, category: str, primary: str, secondary: str, cues: str):
+        with get_db_session() as session:
+            ex = session.query(Exercise).filter_by(id=ex_id).first()
+            if ex:
+                ex.name = name
+                ex.category = category
+                ex.primary_muscle = primary
+                ex.secondary_muscles = secondary
+                ex.cues = cues
+
+    @staticmethod
+    def delete_exercise(ex_id: int):
+        with get_db_session() as session:
+            session.query(Exercise).filter_by(id=ex_id).delete()
