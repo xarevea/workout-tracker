@@ -1,7 +1,13 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey
+import enum
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Enum as SQLEnum
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
+
+class ExerciseMode(enum.Enum):
+    STANDARD = "Standard"
+    CIRCUIT = "Circuit"
+    EMOM = "EMOM"
 
 class User(Base):
     __tablename__ = 'users'
@@ -41,7 +47,7 @@ class Workout(Base):
     __tablename__ = 'workouts'
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('users.id'), default=1)
-    date = Column(String) 
+    date = Column(String)
     name = Column(String, nullable=False)
     duration_minutes = Column(Integer)
     bodyweight_at_time = Column(Float)
@@ -87,6 +93,11 @@ class RoutineExercise(Base):
     target_weight = Column(Float)
     rest_seconds = Column(Integer, default=90)
     is_bodyweight = Column(Boolean, default=False)
+
+    # Strictly typed Enums at the database level
+    mode = Column(SQLEnum(ExerciseMode), default=ExerciseMode.STANDARD)
+    circuit_group = Column(Integer, default=0)
+
     template = relationship("RoutineTemplate", back_populates="exercises")
 
 class Program(Base):

@@ -2,9 +2,10 @@
 import os
 import time
 from collections import defaultdict
+from enum import Enum, auto
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QSpinBox, QDoubleSpinBox, QSlider, 
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QSpinBox, QDoubleSpinBox, QSlider,
     QGroupBox, QScrollArea, QComboBox, QCheckBox,
     QListWidget, QListWidgetItem
 )
@@ -12,6 +13,7 @@ from PyQt6.QtCore import Qt, QTimer, QUrl, QThreadPool, QRectF
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import QSystemTrayIcon, QStyle
+from PyQt6.QtTextToSpeech import QTextToSpeech
 
 from core.db_operations import WorkoutDatabaseManager
 from core.events import event_bus
@@ -22,12 +24,17 @@ from ui.components.barbell_view import BarbellVisualizer
 from ui.components.body_heatmap import AnatomicalHeatmap
 from ui.components.review_dialog import WorkoutReviewDialog
 
+class SetState(Enum):
+    IDLE = auto()
+    BUFFER = auto()
+    ACTIVE = auto()
+
 class MiniRestTimer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(140, 140)
-        
+
         self.percentage = 1.0
         self.time_str = "00:00"
         self.oldPos = self.pos()
@@ -40,19 +47,19 @@ class MiniRestTimer(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
         # Inner transparent-ish black circle
         rect = QRectF(10, 10, self.width() - 20, self.height() - 20)
         painter.setPen(QPen(QColor(0, 0, 0, 150), 8))
         painter.setBrush(QColor(0, 0, 0, 180))
         painter.drawEllipse(rect)
-        
+
         # Outer progress ring (Orange)
         painter.setPen(QPen(QColor("#FF9800"), 8, cap=Qt.PenCapStyle.RoundCap))
         start_angle = 90 * 16 # 12 o'clock position (PyQt angles are in 1/16ths of a degree)
         span_angle = int(-360 * self.percentage * 16) # Negative draws clockwise
         painter.drawArc(rect, start_angle, span_angle)
-        
+
         # Timer Text
         painter.setPen(Qt.GlobalColor.white)
         painter.setFont(QFont("Arial", 28, QFont.Weight.Bold))
@@ -72,35 +79,45 @@ class ActiveTrackerWidget(QWidget):
         self.controller = controller
         self.minimap = minimap
         self.global_timer_lbl = global_timer_lbl
-        
+
         self.workout_seconds = 0
         self.rest_seconds = 0
         self.audio_enabled = True
-        self.warning_threshold_sec = 5 
-        
+        self.warning_threshold_sec = 5
+
+        self.active_set_state = SetState.IDLE
+        self.buffer_remaining = 0
+        self.set_time_remaining = 0
+
         self.tray = QSystemTrayIcon(self)
         self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
         self.tray.show()
-        
+
         self.mini_timer = MiniRestTimer()
+
+        self.tts = QTextToSpeech()
 
         self._setup_audio()
         self._setup_ui()
         self._setup_timers()
 
+    def announce(self, text: str):
+        if self.audio_enabled and self.tts:
+            self.tts.say(text)
+
     def refresh_data(self):
-        if self.controller.is_active: return 
+        if self.controller.is_active: return
 
         self.combo_workout_selector.blockSignals(True)
         self.combo_workout_selector.clear()
-        
+
         templates = WorkoutDatabaseManager.get_program_templates(self.controller.current_program_id)
         if not templates:
             self.combo_workout_selector.addItem("-- No Program / Rest Day --")
         else:
             for t in templates:
                 self.combo_workout_selector.addItem(f"{t['name']} (Day {t['day_number']})", userData=t['id'])
-                
+
         self.combo_workout_selector.blockSignals(False)
 
         if self.combo_workout_selector.count() > 0 and self.combo_workout_selector.currentData():
@@ -112,22 +129,23 @@ class ActiveTrackerWidget(QWidget):
         template_id = self.combo_workout_selector.currentData()
         if template_id:
             if self.controller.is_active:
-                self._toggle_timer() 
-                
+                self._toggle_timer()
+
             self.workout_seconds = 0
             self.rest_seconds = 0
+            self._reset_timed_set()
             self.lbl_timer.setText("00:00")
             self.lbl_timer.setStyleSheet("color: white;")
-            self.controller.start_time = 0 
-            
+            self.controller.start_time = 0
+
             self.rest_container.hide()
             self.log_group.setEnabled(True)
             self.btn_log.setEnabled(False) # Keep disabled until started
-            
+
             self.controller.template_name = self.combo_workout_selector.currentText()
             self.controller.load_template(template_id)
             exercise_names = [ex['name'] for ex in self.controller.exercises]
-            
+
             self.minimap.load_workout(exercise_names)
             self._update_display()
 
@@ -139,7 +157,7 @@ class ActiveTrackerWidget(QWidget):
         self.snd_tick = QSoundEffect()
         if os.path.exists(tick_path):
             self.snd_tick.setSource(QUrl.fromLocalFile(tick_path))
-            
+
         self.snd_bell = QSoundEffect()
         if os.path.exists(bell_path):
             self.snd_bell.setSource(QUrl.fromLocalFile(bell_path))
@@ -192,7 +210,7 @@ class ActiveTrackerWidget(QWidget):
         self.rest_layout.addWidget(self.btn_add_time)
         self.rest_layout.addWidget(self.btn_skip_rest)
         self.rest_layout.addStretch()
-        
+
         self.rest_container = QWidget()
         self.rest_container.setLayout(self.rest_layout)
         sp = self.rest_container.sizePolicy()
@@ -203,10 +221,10 @@ class ActiveTrackerWidget(QWidget):
 
         info_layout = QHBoxLayout()
         text_layout = QVBoxLayout()
-        
+
         self.lbl_progress = QLabel("EXERCISE - OF -")
         self.lbl_progress.setStyleSheet("color: #888888; font-size: 14px; font-weight: bold; letter-spacing: 1px;")
-        
+
         self.lbl_exercise_name = QLabel("Select a template...")
         self.lbl_exercise_name.setFont(QFont("Arial", 24, QFont.Weight.Bold))
         self.barbell_visualizer = BarbellVisualizer()
@@ -215,34 +233,59 @@ class ActiveTrackerWidget(QWidget):
         self.cues_list = QListWidget()
         self.cues_list.setStyleSheet("background-color: transparent; border: none; color: #b0b0b0; font-style: italic;")
         self.cues_list.setMaximumHeight(80)
-        
+
         text_layout.addWidget(self.lbl_progress)
         text_layout.addWidget(self.lbl_exercise_name)
         text_layout.addWidget(self.cues_list)
         text_layout.addWidget(self.barbell_visualizer )
         text_layout.addWidget(self.lbl_set_tracker)
-        text_layout.addStretch() 
-        
+        text_layout.addStretch()
+
         self.exercise_heatmap = AnatomicalHeatmap()
-        
+
         info_layout.addLayout(text_layout)
         info_layout.addWidget(self.exercise_heatmap)
-        info_layout.setStretch(0, 1) 
-        info_layout.setStretch(1, 1) 
+        info_layout.setStretch(0, 1)
+        info_layout.setStretch(1, 1)
         layout.addLayout(info_layout)
 
         self.log_group = QGroupBox("Log Current Set")
         log_layout = QVBoxLayout()
+
+        # --- TIMED SET WIDGET ---
+        self.timed_set_widget = QWidget()
+        ts_layout = QHBoxLayout(self.timed_set_widget)
+        ts_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.btn_start_timed = QPushButton("▶ Start Set Timer")
+        self.btn_start_timed.setStyleSheet("background-color: #9C27B0; color: white; font-weight: bold;")
+        self.btn_start_timed.clicked.connect(self._toggle_timed_set)
+
+        self.spin_buffer = QSpinBox()
+        self.spin_buffer.setPrefix("Buffer: ")
+        self.spin_buffer.setSuffix("s")
+        self.spin_buffer.setValue(5)
+
+        self.lbl_timed_status = QLabel("")
+
+        ts_layout.addWidget(self.btn_start_timed)
+        ts_layout.addWidget(self.spin_buffer)
+        ts_layout.addWidget(self.lbl_timed_status)
+        ts_layout.addStretch()
+
+        log_layout.addWidget(self.timed_set_widget)
+        self.timed_set_widget.hide()
+
         input_layout = QHBoxLayout()
         self.spin_weight = QDoubleSpinBox()
         self.spin_weight.setRange(0, 1000)
         self.spin_weight.setSuffix(" lbs")
         self.spin_weight.setSingleStep(2.5)
         self.spin_reps = QSpinBox()
-        self.spin_reps.setRange(0, 100)
+        self.spin_reps.setRange(0, 1000)
         self.spin_reps.setSuffix(" reps")
 
-        self.is_static_mode = False 
+        self.is_static_mode = False
         self.btn_toggle_static = QPushButton("⏱")
         self.btn_toggle_static.setToolTip("Toggle Reps / Time (s)")
         self.btn_toggle_static.setFixedWidth(40)
@@ -256,7 +299,7 @@ class ActiveTrackerWidget(QWidget):
         self.chk_warmup = QCheckBox("Warm-Up Set")
         self.chk_warmup.setStyleSheet("color: #FF9800; font-weight: bold;")
         input_layout.addWidget(self.chk_warmup)
-        
+
         self.btn_auto_warmup = QPushButton("Auto Warm-Up")
         self.btn_auto_warmup.setStyleSheet("color: #FF9800; font-weight: bold;")
         self.btn_auto_warmup.clicked.connect(self._on_generate_warmups)
@@ -271,7 +314,7 @@ class ActiveTrackerWidget(QWidget):
         self.slider_rpe.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.lbl_rpe_val = QLabel("RPE: 7")
         self.slider_rpe.valueChanged.connect(lambda v: self.lbl_rpe_val.setText(f"RPE: {v}"))
-        
+
         rpe_layout.addWidget(QLabel("Effort:"))
         rpe_layout.addWidget(self.slider_rpe)
         rpe_layout.addWidget(self.lbl_rpe_val)
@@ -282,12 +325,12 @@ class ActiveTrackerWidget(QWidget):
         self.btn_log.setFixedSize(200, 40)
         self.btn_log.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
         self.btn_log.clicked.connect(self._on_log_set_clicked)
-        self.btn_log.setEnabled(False) 
+        self.btn_log.setEnabled(False)
 
         self.btn_undo = QPushButton("⟲ Undo Set")
         self.btn_undo.setStyleSheet("background-color: #555555; color: white;")
         self.btn_undo.clicked.connect(self._handle_undo_set)
-        
+
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_log)
         btn_layout.addWidget(self.btn_undo)
@@ -312,7 +355,7 @@ class ActiveTrackerWidget(QWidget):
             self.spin_reps.setSuffix(" sec")
         else:
             self.spin_reps.setSuffix(" reps")
-    
+
     def _setup_timers(self):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_clock)
@@ -331,8 +374,31 @@ class ActiveTrackerWidget(QWidget):
             self.btn_log.setEnabled(False)
 
     def _update_clock(self):
-        if not self.controller.is_active: 
+        if not self.controller.is_active:
             return
+
+        if self.active_set_state == "BUFFER":
+            self.buffer_remaining -= 1
+            self.lbl_timed_status.setText(f"Get Ready: {self.buffer_remaining}s")
+            self.lbl_timed_status.setStyleSheet("color: #FF9800; font-weight: bold;")
+            if self.buffer_remaining <= 3 and self.buffer_remaining > 0:
+                self._play_sound("tick")
+            elif self.buffer_remaining <= 0:
+                self._play_sound("bell")
+                self.active_set_state = "ACTIVE"
+        elif self.active_set_state == "ACTIVE":
+            self.set_time_remaining -= 1
+            self.lbl_timed_status.setText(f"HOLD! {self.set_time_remaining}s left")
+            self.lbl_timed_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            if self.set_time_remaining <= 3 and self.set_time_remaining > 0:
+                self._play_sound("tick")
+            elif self.set_time_remaining <= 0:
+                self._play_sound("bell")
+                self.lbl_timed_status.setText("Time's Up! Log your time.")
+                self.lbl_timed_status.setStyleSheet("color: #2196F3; font-weight: bold;")
+                self.active_set_state = "IDLE"
+                self.btn_start_timed.setText("▶ Restart Timer")
+                self.btn_start_timed.setStyleSheet("background-color: #9C27B0; color: white; font-weight: bold;")
 
         if self.controller.start_time:
             total_secs = int(time.time() - self.controller.start_time)
@@ -345,7 +411,7 @@ class ActiveTrackerWidget(QWidget):
             self.rest_seconds -= 1
             mins, secs = divmod(self.rest_seconds, 60)
             time_str = f"Resting: {mins:02d}:{secs:02d}"
-            
+
             # --- PROGRESS PERCENTAGE CALCULATION ---
             current_ex = self.controller.get_current_exercise()
             total_rest_target = current_ex.get('rest_seconds', 90) if current_ex else 90
@@ -357,18 +423,23 @@ class ActiveTrackerWidget(QWidget):
 
             self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #FF9800;")
-            
+
             self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
             self.global_timer_lbl.setStyleSheet("color: #FF9800; font-weight: bold; font-size: 16px;")
 
-            if self.rest_seconds == self.warning_threshold_sec: 
+            if self.rest_seconds == self.warning_threshold_sec:
                 self._play_sound("tick")
-            elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0: 
+            elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0:
                 self._play_sound("tick")
             elif self.rest_seconds == 0:
                 self._play_sound("bell")
                 self.tray.showMessage("Rest Complete!", "Time for your next set.", QSystemTrayIcon.MessageIcon.Information, 3000)
-                self._skip_rest() 
+                self._skip_rest()
+
+                next_task = self.controller.get_current_task()
+                if next_task:
+                    ex_name = next_task['exercise']['name']
+                    self.announce(f"Time is up. Next exercise: {ex_name}")
         else:
             self.mini_timer.hide()
             self.workout_seconds += 1
@@ -378,7 +449,7 @@ class ActiveTrackerWidget(QWidget):
             # Update Local Timer
             self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #4CAF50;")
-            
+
             # Update Global Header
             self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
             self.global_timer_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 16px;")
@@ -394,46 +465,76 @@ class ActiveTrackerWidget(QWidget):
         self.lbl_timer.setStyleSheet("color: #4CAF50;")
 
     def _update_display(self):
-        current_ex = self.controller.get_current_exercise()
-        self.minimap.set_active_node(self.controller.current_exercise_index)
-        for i in reversed(range(self.history_layout.count())): 
+        # 1. Ask the queue for the exact set we are currently on
+        task = self.controller.get_current_task()
+
+        # 2. Clear out the history UI logs from the previously viewed set
+        for i in reversed(range(self.history_layout.count())):
             widget = self.history_layout.itemAt(i).widget()
             if widget: widget.setParent(None)
 
-        if not current_ex:
+        self._reset_timed_set()
+
+        # 3. Handle Workout Completion State
+        if not task:
             self.lbl_progress.setText("WORKOUT COMPLETE")
             self.lbl_exercise_name.setText("Workout Complete!")
             self.lbl_set_tracker.setText("-")
             self.btn_log.setEnabled(False)
             self.btn_play_pause.setEnabled(False)
             self.btn_auto_warmup.setEnabled(False)
-            self.exercise_heatmap.update_heatmap({}) 
+            self.exercise_heatmap.update_heatmap({})
+            self.timed_set_widget.hide()
+            self._set_static_mode(False)
             return
-            
+
+        # 4. Extract data from the unrolled task
+        current_ex = task['exercise']
+        current_set_num = task['set_number']
+        is_emom = task.get('is_emom', False)
+
+        # Update Minimap based on unique exercise index
+        idx = next((i for i, e in enumerate(self.controller.exercises) if e['name'] == current_ex['name']), 0)
+        self.minimap.set_active_node(idx)
+
         self.btn_auto_warmup.setEnabled(True)
         self.btn_play_pause.setEnabled(True)
 
+        # 5. Handle UI toggles for Timed vs Rep-based exercises
+        if current_ex.get('tracks_time', False):
+            self.timed_set_widget.show()
+            self._set_static_mode(True)
+        else:
+            self.timed_set_widget.hide()
+            self._set_static_mode(False)
+
+        # 6. Announce starting an EMOM automatically
+        if is_emom and self.active_set_state == SetState.IDLE:
+            if hasattr(self, 'announce'):
+                self.announce(f"Starting E-MOM for {current_ex['name']}")
+            self._toggle_timed_set() # Auto-start the timer for EMOMs!
+
+        # 7. Update Text UI elements
         cues_text = current_ex.get('cues')
         if not cues_text:
              cues_text = "1. Focus on form\n2. Maintain tension\n3. Full range of motion"
-             
+
         self.cues_list.clear()
         for cue in cues_text.split('\n'):
             self.cues_list.addItem(QListWidgetItem(cue))
 
         total_ex = len(self.controller.exercises)
-        current_idx = self.controller.current_exercise_index + 1
-        self.lbl_progress.setText(f"EXERCISE {current_idx} OF {total_ex}")
-
+        self.lbl_progress.setText(f"EXERCISE {idx + 1} OF {total_ex}")
         self.lbl_exercise_name.setText(current_ex['name'])
-        self.lbl_set_tracker.setText(f"Set {self.controller.current_set} of {current_ex['target_sets']}  |  Target: {current_ex['target_reps_min']} - {current_ex['target_reps_max']} Reps")
-        
+
+        target_str = "Secs" if current_ex.get('tracks_time', False) else "Reps"
+        self.lbl_set_tracker.setText(f"Set {current_set_num} of {current_ex['target_sets']}  |  Target: {current_ex['target_reps_min']} - {current_ex['target_reps_max']} {target_str}")
+
         self.spin_weight.setValue(current_ex['target_weight'])
         self.spin_reps.setValue(current_ex['target_reps_max'])
-        
-        self.minimap.set_active_node(self.controller.current_exercise_index)
-        self.chk_warmup.setChecked(False) 
+        self.chk_warmup.setChecked(False)
 
+        # 8. Render Visualizers
         loadout = PlateCalculator.calculate_loadout(current_ex['target_weight'], user_id=self.controller.current_user_id)
         if loadout is not None:
             self.barbell_visualizer.set_loadout(loadout)
@@ -442,19 +543,22 @@ class ActiveTrackerWidget(QWidget):
             self.barbell_visualizer.hide()
 
         volume_map = {}
-        if current_ex.get('primary_muscle'): volume_map[current_ex['primary_muscle']] = 15 
+        if current_ex.get('primary_muscle'): volume_map[current_ex['primary_muscle']] = 15
         if current_ex.get('secondary_muscles'):
-            for sec in [s.strip() for s in current_ex['secondary_muscles'].split(',')]: volume_map[sec] = 5 
+            for sec in [s.strip() for s in current_ex['secondary_muscles'].split(',')]: volume_map[sec] = 5
         self.exercise_heatmap.update_heatmap(volume_map)
 
+        # 9. Load Historical Context for THIS specific exercise
         for log in self.controller.session_logs:
             if log['exercise'] == current_ex['name']:
                 color = "#888888" if log.get('is_warmup') else ("#4CAF50" if log['reps'] >= current_ex['target_reps_min'] else "#F44336")
                 prefix = "Warmup" if log.get('is_warmup') else f"Set {log['set']}"
-                lbl = QLabel(f"{prefix}: {log['reps']} reps @ {log['weight']} lbs | RPE: {log['rpe']}")
+                rep_type = "s" if current_ex.get('tracks_time', False) else " reps"
+
+                lbl = QLabel(f"{prefix}: {log['reps']}{rep_type} @ {log['weight']} lbs | RPE: {log['rpe']}")
                 lbl.setStyleSheet(f"color: {color}; font-weight: bold; padding: 2px;")
                 self.history_layout.addWidget(lbl)
-    
+
     def _on_generate_warmups(self):
         current_ex = self.controller.get_current_exercise()
         if not current_ex: return
@@ -462,8 +566,9 @@ class ActiveTrackerWidget(QWidget):
         for w in warmups:
             self.controller.log_set(reps=w['reps'], weight=w['weight'], rpe=5, is_warmup=True)
         self._update_display()
-    
+
     def _on_log_set_clicked(self):
+        self._reset_timed_set()
         self.controller.log_set(
             reps=self.spin_reps.value(),
             weight=self.spin_weight.value(),
@@ -471,13 +576,13 @@ class ActiveTrackerWidget(QWidget):
             is_warmup=self.chk_warmup.isChecked()
         )
         self.slider_rpe.setValue(7)
-        
+
         if self.controller.current_exercise_index >= len(self.controller.exercises):
             self._trigger_workout_review()
         else:
             self._update_display()
             rest_needed = self.controller.get_current_exercise().get('rest_seconds', 90)
-            
+
             # If the exercise has 0 rest, skip the rest UI immediately to reset the set timer
             if rest_needed > 0:
                 self.rest_seconds = rest_needed
@@ -493,13 +598,13 @@ class ActiveTrackerWidget(QWidget):
 
         self.global_timer_lbl.setText("Workout Complete")
         self.global_timer_lbl.setStyleSheet("color: #888;")
-        
+
         logs_by_ex = defaultdict(list)
         for log in workout_data['logs']: logs_by_ex[log['exercise']].append(log)
-                    
+
         engine = ProgressionEngine()
         suggestions = {}
-        
+
         for ex_dict in self.controller.exercises:
             ex_name = ex_dict['name']
             if ex_name in logs_by_ex:
@@ -515,10 +620,10 @@ class ActiveTrackerWidget(QWidget):
 
         current_settings = {ex['name']: {'weight': ex['target_weight'], 'min_reps': ex['target_reps_min'], 'max_reps': ex['target_reps_max']} for ex in self.controller.exercises}
         dialog = WorkoutReviewDialog(workout_data['logs'], suggestions, current_settings, self)
-        
+
         if dialog.exec():
             WorkoutDatabaseManager.update_routine_targets(self.combo_workout_selector.currentData(), dialog.get_final_targets())
-            
+
         latest_bw = WorkoutDatabaseManager.get_latest_bodyweight(self.controller.current_user_id)
         workout_id = WorkoutDatabaseManager.save_completed_workout(
             user_id=self.controller.current_user_id,
@@ -528,10 +633,10 @@ class ActiveTrackerWidget(QWidget):
             logs=workout_data['logs']
         )
         self.controller.workout_id = workout_id
-        
+
         worker = FitbitSyncWorker(workout_id, workout_data['duration_minutes'])
         QThreadPool.globalInstance().start(worker)
-        
+
         # Fire signal to prompt updates
         event_bus.WORKOUT_COMPLETED.emit()
         self._update_display()
@@ -543,8 +648,31 @@ class ActiveTrackerWidget(QWidget):
                 self.timer.start(1000)
             if hasattr(self, 'btn_log'):
                 self.btn_log.setEnabled(True)
-                
+
             self.workout_seconds = 0  # <--- Reset the set timer so you can re-attempt cleanly
             self.rest_container.hide()
             self.log_group.setEnabled(True)
             self._update_display()
+
+    def _set_static_mode(self, is_static: bool):
+        self.is_static_mode = is_static
+        if self.is_static_mode:
+            self.spin_reps.setSuffix(" sec")
+        else:
+            self.spin_reps.setSuffix(" reps")
+
+    def _reset_timed_set(self):
+        self.active_set_state = "IDLE"
+        self.btn_start_timed.setText("▶ Start Set Timer")
+        self.btn_start_timed.setStyleSheet("background-color: #9C27B0; color: white; font-weight: bold;")
+        self.lbl_timed_status.setText("")
+
+    def _toggle_timed_set(self):
+        if self.active_set_state != "IDLE":
+            self._reset_timed_set()
+        else:
+            self.active_set_state = "BUFFER"
+            self.buffer_remaining = self.spin_buffer.value()
+            self.set_time_remaining = self.spin_reps.value()
+            self.btn_start_timed.setText("⏹ Cancel Timer")
+            self.btn_start_timed.setStyleSheet("background-color: #F44336; color: white; font-weight: bold;")

@@ -1,13 +1,15 @@
+import csv
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, 
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
+    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QSpinBox, QSplitter, QListWidget, QAbstractItemView,
-    QListWidgetItem, QMessageBox, QDialog, QDoubleSpinBox
+    QListWidgetItem, QMessageBox, QDialog, QDoubleSpinBox, QFileDialog,
 )
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from core.db_operations import WorkoutDatabaseManager
+from core.models import ExerciseMode
 from modules.equipment.plate_calculator import PlateCalculator
 from ui.components.body_heatmap import AnatomicalHeatmap, MuscleMapper
 from ui.views.base_view import BaseView
@@ -15,7 +17,7 @@ from ui.views.base_view import BaseView
 class ProgramScheduleList(QListWidget):
     """Custom List to handle Drag and Drop from the Exercise Bank."""
     scheduleChanged = pyqtSignal()
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
@@ -42,7 +44,7 @@ class ProgramScheduleList(QListWidget):
             # Reordering internally
             super().dropEvent(event)
             self.scheduleChanged.emit() # Safely alerts the parent view without referencing MainWindow
-            
+
         elif event.source() is not None:
             # Dropped from Exercise Bank QListWidget
             drop_row = self.indexAt(event.position().toPoint()).row()
@@ -56,7 +58,7 @@ class ProgramScheduleList(QListWidget):
                 new_item.setData(Qt.ItemDataRole.UserRole, ex_name)
                 self.insertItem(drop_row, new_item)
                 drop_row += 1
-                
+
             event.acceptProposedAction()
             self.scheduleChanged.emit()
 
@@ -67,46 +69,67 @@ class FinalizeProgramDialog(QDialog):
         self.setWindowTitle("Finalize Program Details")
         self.resize(850, 500)
         self.layout = QVBoxLayout(self)
-        
+
         header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel("Set your targets for the new program:"))
-        
+        header_layout.addWidget(QLabel("Global Default Rest (s):"))
+
+        self.spin_default_rest = QSpinBox()
+        self.spin_default_rest.setRange(0, 600)
+        self.spin_default_rest.setValue(90)
+        self.spin_default_rest.valueChanged.connect(self._apply_default_rest)
+        header_layout.addWidget(self.spin_default_rest)
+
+        header_layout.addStretch()
+
         btn_snap = QPushButton("🧲 Auto-Snap Weights to My Equipment")
         btn_snap.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
         btn_snap.setToolTip("Adjusts all target weights to the closest valid combination using your Garage inventory.")
         btn_snap.clicked.connect(self._snap_to_equipment)
         header_layout.addStretch()
         header_layout.addWidget(btn_snap)
-        
+
         self.layout.addLayout(header_layout)
 
-        self.table = QTableWidget(len(exercises_data), 7)
-        self.table.setHorizontalHeaderLabels(["Day", "Exercise", "Sets", "Min Reps", "Max Reps", "Weight", "Rest (s)"])
+        self.table = QTableWidget(len(exercises_data), 9)
+        self.table.setHorizontalHeaderLabels(["Day", "Exercise", "Mode", "Group", "Sets", "Min Reps", "Max Reps", "Weight", "Rest (s)"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.layout.addWidget(self.table)
-        
+
         for row, ex in enumerate(exercises_data):
             day_item = QTableWidgetItem(ex['day']); day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             ex_item = QTableWidgetItem(ex['name']); ex_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            self.table.setItem(row, 0, day_item)
-            self.table.setItem(row, 1, ex_item)
-            
+
+            combo_mode = QComboBox()
+            for mode_enum in ExerciseMode:
+                combo_mode.addItem(mode_enum.value, userData=mode_enum)
+
+            spin_group = QSpinBox()
+            spin_group.setToolTip("Exercises with the same Group # run together in a circuit.")
+
             spin_sets = QSpinBox(); spin_sets.setValue(3)
             spin_min = QSpinBox(); spin_min.setValue(8)
             spin_max = QSpinBox(); spin_max.setValue(12)
             spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1000); spin_wt.setValue(0.0)
             spin_rest = QSpinBox(); spin_rest.setRange(0, 600); spin_rest.setSingleStep(15); spin_rest.setValue(90)
-            
-            self.table.setCellWidget(row, 2, spin_sets)
-            self.table.setCellWidget(row, 3, spin_min)
-            self.table.setCellWidget(row, 4, spin_max)
-            self.table.setCellWidget(row, 5, spin_wt)
-            self.table.setCellWidget(row, 6, spin_rest)
+
+            self.table.setItem(row, 0, day_item)
+            self.table.setItem(row, 1, ex_item)
+            self.table.setCellWidget(row, 2, combo_mode)
+            self.table.setCellWidget(row, 3, spin_group)
+            self.table.setCellWidget(row, 4, spin_sets)
+            self.table.setCellWidget(row, 5, spin_min)
+            self.table.setCellWidget(row, 6, spin_max)
+            self.table.setCellWidget(row, 7, spin_wt)
+            self.table.setCellWidget(row, 8, spin_rest)
 
         btn_save = QPushButton("Confirm & Save Program")
         btn_save.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;")
         btn_save.clicked.connect(self.accept)
         self.layout.addWidget(btn_save)
+
+    def _apply_default_rest(self, value):
+        for row in range(self.table.rowCount()):
+            self.table.cellWidget(row, 8).setValue(value)
 
     def _snap_to_equipment(self):
         for row in range(self.table.rowCount()):
@@ -123,11 +146,13 @@ class FinalizeProgramDialog(QDialog):
             final_data.append({
                 'day': self.table.item(row, 0).text(),
                 'exercise': self.table.item(row, 1).text(),
-                'sets': self.table.cellWidget(row, 2).value(),
-                'min_reps': self.table.cellWidget(row, 3).value(),
-                'max_reps': self.table.cellWidget(row, 4).value(),
-                'weight': self.table.cellWidget(row, 5).value(),
-                'rest': self.table.cellWidget(row, 6).value()
+                'mode': self.table.cellWidget(row, 2).currentData(),
+                'circuit_group': self.table.cellWidget(row, 3).value(),
+                'sets': self.table.cellWidget(row, 4).value(),
+                'min_reps': self.table.cellWidget(row, 5).value(),
+                'max_reps': self.table.cellWidget(row, 6).value(),
+                'weight': self.table.cellWidget(row, 7).value(),
+                'rest': self.table.cellWidget(row, 8).value()
             })
         return final_data
 
@@ -141,15 +166,15 @@ class ProgramSandboxView(BaseView):
 
         layout = QHBoxLayout(self)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        
+
         self._setup_left_panel()
         self._setup_middle_panel()
         self._setup_right_panel()
-        
+
         layout.addWidget(self.splitter)
         self.splitter.setSizes([350, 250, 500])
         self._load_exercise_bank()
-        
+
     def _setup_left_panel(self):
         # Unchanged from your original code
         panel = QWidget()
@@ -162,22 +187,22 @@ class ProgramSandboxView(BaseView):
         self.combo_analysis_view.currentTextChanged.connect(self._trigger_live_feedback)
         header_layout.addWidget(self.combo_analysis_view)
         layout.addLayout(header_layout)
-        
+
         self.heatmap = AnatomicalHeatmap()
         self.heatmap.regionClicked.connect(self._on_heatmap_clicked)
         layout.addWidget(self.heatmap, stretch=1)
-        
+
         self.lbl_assistant = QLabel("<b>Assistant:</b> Add exercises to see feedback.")
         self.lbl_assistant.setWordWrap(True)
         self.lbl_assistant.setStyleSheet("color: #2196F3; padding: 10px; background: #1E1E1E; border-radius: 5px;")
         layout.addWidget(self.lbl_assistant)
-        
+
         self.splitter.addWidget(panel)
 
     def refresh_data(self):
         current_search = self.search_bar.text()
         self._load_exercise_bank()
-        
+
         self.combo_load_program.blockSignals(True)
         self.combo_load_program.clear()
         self.combo_load_program.addItem("-- Create New Program --", userData=None)
@@ -185,10 +210,10 @@ class ProgramSandboxView(BaseView):
         for p in programs:
             self.combo_load_program.addItem(p['name'], userData=p['id'])
         self.combo_load_program.blockSignals(False)
-        
+
         self.combo_load_program.setCurrentIndex(0)
-        self._load_existing_program() 
-        
+        self._load_existing_program()
+
         if current_search: self._filter_bank(current_search)
         self._trigger_live_feedback()
 
@@ -196,12 +221,12 @@ class ProgramSandboxView(BaseView):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.addWidget(QLabel("<b>Exercise Bank</b>"))
-        
+
         self.combo_bodypart = QComboBox()
         self.combo_bodypart.addItems(["All Muscles"] + list(MuscleMapper.REGION_MAP.keys()))
         self.combo_bodypart.currentTextChanged.connect(self._refresh_bank_display)
         layout.addWidget(self.combo_bodypart)
-        
+
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Search exercises...")
         self.search_bar.textChanged.connect(self._refresh_bank_display)
@@ -211,49 +236,54 @@ class ProgramSandboxView(BaseView):
         self.btn_toggle_balance.setCheckable(True)
         self.btn_toggle_balance.toggled.connect(self._toggle_balance_suggestions)
         layout.addWidget(self.btn_toggle_balance)
-        
+
         # Configure drag from Bank
         self.exercise_list = QListWidget()
         self.exercise_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.exercise_list.setDragEnabled(True)
         self.exercise_list.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         layout.addWidget(self.exercise_list)
-        
+
         self.splitter.addWidget(panel)
 
     def _setup_right_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        
+
         header_layout = QHBoxLayout()
         header_layout.addWidget(QLabel("<b>Program Schedule</b>"))
-        
+
         self.combo_load_program = QComboBox()
         self.combo_load_program.addItem("-- Create New Program --", userData=None)
         self.combo_load_program.currentIndexChanged.connect(self._load_existing_program)
         header_layout.addWidget(self.combo_load_program)
         layout.addLayout(header_layout)
-        
+
         self.txt_program_name = QLineEdit()
         self.txt_program_name.setPlaceholderText("Enter Program Name...")
         layout.addWidget(self.txt_program_name)
-        
+
         self.schedule_list = ProgramScheduleList()
-        self.schedule_list.itemDoubleClicked.connect(self._remove_from_schedule) 
+        self.schedule_list.itemDoubleClicked.connect(self._remove_from_schedule)
 
         self.schedule_list.scheduleChanged.connect(self._trigger_live_feedback)
 
         layout.addWidget(self.schedule_list)
-        
+
         self.lbl_fatigue = QLabel("Daily Volume: Safe")
         self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
         layout.addWidget(self.lbl_fatigue)
-        
+
         self.btn_save = QPushButton("Configure & Save Program")
         self.btn_save.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
         self.btn_save.clicked.connect(self._save_program)
         layout.addWidget(self.btn_save)
-        
+
+        self.btn_import_csv = QPushButton("📥 Import Program from CSV")
+        self.btn_import_csv.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold; padding: 8px;")
+        self.btn_import_csv.clicked.connect(self._import_from_csv)
+        layout.addWidget(self.btn_import_csv)
+
         self.splitter.addWidget(panel)
 
     def _remove_from_schedule(self, item):
@@ -270,20 +300,20 @@ class ProgramSandboxView(BaseView):
     def _load_existing_program(self):
         program_id = self.combo_load_program.currentData()
         self.schedule_list.clear()
-        
+
         if not program_id:
             self.txt_program_name.clear()
             self._init_empty_days()
             self._trigger_live_feedback()
             return
-            
+
         self.txt_program_name.setText(self.combo_load_program.currentText())
         data = WorkoutDatabaseManager.get_sandbox_program_data(program_id)
-        
+
         # Group exercises by day
         day_map = {d: [] for d in ["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"]}
         for item in data: day_map[item['day']].append(item['exercise'])
-            
+
         for day, ex_list in day_map.items():
             # Add Horizontal Separator Header
             header = QListWidgetItem(f"--- {day} ---")
@@ -293,12 +323,12 @@ class ProgramSandboxView(BaseView):
             header.setFlags(header.flags() & ~Qt.ItemFlag.ItemIsDragEnabled & ~Qt.ItemFlag.ItemIsSelectable)
             header.setData(Qt.ItemDataRole.UserRole + 1, day)
             self.schedule_list.addItem(header)
-            
+
             for ex in ex_list:
                 item = QListWidgetItem(ex)
                 item.setData(Qt.ItemDataRole.UserRole, ex)
                 self.schedule_list.addItem(item)
-                
+
         self._trigger_live_feedback()
 
     def _init_empty_days(self):
@@ -314,11 +344,11 @@ class ProgramSandboxView(BaseView):
     def _get_current_schedule_data(self):
         exercises_data = []
         current_day = "Unassigned"
-        
+
         for i in range(self.schedule_list.count()):
             item = self.schedule_list.item(i)
             is_header = item.data(Qt.ItemDataRole.UserRole + 1)
-            
+
             if is_header:
                 current_day = is_header
             else:
@@ -333,7 +363,7 @@ class ProgramSandboxView(BaseView):
         if not name:
             QMessageBox.warning(self, "Error", "Please enter a program name.")
             return
-            
+
         exercises_data = self._get_current_schedule_data()
         if not exercises_data:
             QMessageBox.warning(self, "Error", "Your schedule is empty!")
@@ -371,53 +401,53 @@ class ProgramSandboxView(BaseView):
     def _refresh_bank_display(self, *args):
         search_text = self.search_bar.text().lower()
         selected_bodypart = self.combo_bodypart.currentText().lower()
-        
+
         pool_exercises = {ex['name'] for ex in self._get_current_schedule_data()}
         self.exercise_list.clear()
-        
+
         regular_items = []
         suggested_items = []
-        
+
         for ex in self.all_exercises:
             name = ex['name']
             primary = ex['primary_muscle'].lower() if ex['primary_muscle'] else ''
             secondary = ex['secondary_muscles'].lower() if ex['secondary_muscles'] else ''
-            
+
             if name in pool_exercises: continue
             if search_text and search_text not in name.lower(): continue
-                
+
             if selected_bodypart != "all muscles":
                 # FIX: Get the targets and ensure everything is space-separated instead of hyphens
                 targets = MuscleMapper.REGION_MAP.get(selected_bodypart.title(), [])
                 norm_targets = [t.replace('-', ' ').lower() for t in targets] + [selected_bodypart]
-                
+
                 norm_pri = primary.replace('-', ' ')
                 norm_sec = secondary.replace('-', ' ')
-                
+
                 # Check if ANY target is inside the primary or secondary strings
                 if not any(t in norm_pri or t in norm_sec for t in norm_targets):
                     continue
-                    
+
             if self.show_balance_suggestions and primary in self.neglected_muscles:
                 suggested_items.append(name)
             else:
                 regular_items.append(name)
-                
+
         if suggested_items:
             header = QListWidgetItem("✨ RECOMMENDED TO BALANCE ✨")
             header.setFlags(Qt.ItemFlag.NoItemFlags); header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             header.setBackground(QColor("#2A1F11")); header.setForeground(QColor("#FF9800"))
             self.exercise_list.addItem(header)
-            
+
             for name in sorted(suggested_items):
                 item = QListWidgetItem(f"⭐ {name}")
-                item.setForeground(QColor("#FF9800")); item.setData(Qt.ItemDataRole.UserRole, name) 
+                item.setForeground(QColor("#FF9800")); item.setData(Qt.ItemDataRole.UserRole, name)
                 self.exercise_list.addItem(item)
-                
+
             sep = QListWidgetItem("-" * 30); sep.setFlags(Qt.ItemFlag.NoItemFlags)
             sep.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.exercise_list.addItem(sep)
-            
+
         for name in sorted(regular_items):
             item = QListWidgetItem(name)
             item.setData(Qt.ItemDataRole.UserRole, name)
@@ -426,17 +456,17 @@ class ProgramSandboxView(BaseView):
     def _trigger_live_feedback(self):
         active_view = self.combo_analysis_view.currentText()
         schedule_data = self._get_current_schedule_data()
-        
+
         exercises_data = []
         day_volumes = {}
         active_days = set()
-        
+
         for ex in schedule_data:
             day = ex['day']
             if day != "Unassigned":
                 active_days.add(day)
                 day_volumes[day] = day_volumes.get(day, 0) + 3 # Assumed 3 sets for live estimate
-            
+
             if active_view == "Overall Program" or active_view == day:
                 exercises_data.append({'name': ex['name'], 'sets': 3})
 
@@ -452,7 +482,7 @@ class ProgramSandboxView(BaseView):
 
         volume_map = WorkoutDatabaseManager.calculate_muscle_volume(exercises_data)
         self.heatmap.update_heatmap(volume_map)
-        
+
         overloaded_days = [d for d, s in day_volumes.items() if s > 20]
         if overloaded_days:
             self.lbl_fatigue.setText(f"⚠️ High Fatigue: {', '.join(overloaded_days)} exceed 20 sets.")
@@ -460,7 +490,7 @@ class ProgramSandboxView(BaseView):
         else:
             self.lbl_fatigue.setText("Daily Volume: Optimal")
             self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
-            
+
         if active_view == "Overall Program":
             # Map raw volume strings to broad regions
             region_volume = {r.lower(): 0 for r in MuscleMapper.REGION_MAP.keys()}
@@ -488,3 +518,57 @@ class ProgramSandboxView(BaseView):
             self.lbl_assistant.setStyleSheet("color: #2196F3;")
 
         self._refresh_bank_display()
+
+    def _import_from_csv(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Import Program CSV", "", "CSV Files (*.csv)")
+        if not file_path: return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                pool_data = []
+
+                for row in reader:
+                    # Clean up the Day format (ensuring it fits "Day 1", "Day 2", etc.)
+                    day = row.get('Day', 'Day 1').strip()
+                    if not day.startswith('Day'):
+                        day = f"Day {day}"
+
+                    ex_name = row.get('Exercise', '').strip()
+                    if not ex_name: continue
+
+                    # Auto-add the exercise to the DB if it doesn't exist
+                    WorkoutDatabaseManager.add_exercise(
+                        name=ex_name, primary="Unknown", secondary="", cues="Imported from CSV"
+                    )
+
+                    # Append to pool data matching the format save_sandbox_program expects
+                    pool_data.append({
+                        'day': day,
+                        'exercise': ex_name,
+                        'sets': int(row.get('Sets', 3) or 3),
+                        'min_reps': int(row.get('Min_Reps', 8) or 8),
+                        'max_reps': int(row.get('Max_Reps', 12) or 12),
+                        'weight': float(row.get('Weight', 0.0) or 0.0),
+                        'rest': int(row.get('Rest_Seconds', 90) or 90)
+                    })
+
+            if not pool_data:
+                QMessageBox.warning(self, "Error", "No valid exercises found in CSV.")
+                return
+
+            prog_name = self.txt_program_name.text().strip() or "Imported Program"
+
+            # Pass to Database Manager to save as a new program
+            WorkoutDatabaseManager.save_sandbox_program(
+                user_id=self.current_user_id,
+                program_id=None,  # 'None' forces the creation of a new program
+                program_name=prog_name,
+                pool_data=pool_data
+            )
+
+            QMessageBox.information(self, "Success", f"'{prog_name}' imported successfully!")
+            self.refresh_data()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Import Failed", f"Error reading CSV:\n{str(e)}")

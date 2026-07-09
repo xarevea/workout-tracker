@@ -5,7 +5,7 @@ import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, 
     QListWidget, QComboBox, QPlainTextEdit, QSplitter, QMessageBox,
-    QFileDialog,
+    QFileDialog, QCheckBox,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QMovie
@@ -68,6 +68,10 @@ class ExerciseDictionaryView(BaseView):
         self.txt_secondary.setPlaceholderText("e.g. triceps, core, lower-back")
         self.right_layout.addWidget(QLabel("Secondary Muscles (Comma Separated):"))
         self.right_layout.addWidget(self.txt_secondary)
+
+        self.chk_time_based = QCheckBox("Time-Based Exercise (Log seconds instead of reps)")
+        self.chk_time_based.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        self.right_layout.addWidget(self.chk_time_based)
         
         self.txt_cues = QPlainTextEdit()
         self.txt_cues.setPlaceholderText("1. Cue one\n2. Cue two")
@@ -155,10 +159,11 @@ class ExerciseDictionaryView(BaseView):
         self.txt_name.setEnabled(enabled)
         self.combo_primary.setEnabled(enabled)
         self.txt_secondary.setEnabled(enabled)
+        self.chk_time_based.setEnabled(enabled)
         self.txt_cues.setEnabled(enabled)
         self.btn_save.setEnabled(enabled)
         self.btn_delete.setEnabled(enabled and self.current_ex_id is not None)
-
+    
     def _prepare_new_exercise(self):
         self.ex_list.clearSelection()
         self.current_ex_id = None
@@ -166,6 +171,7 @@ class ExerciseDictionaryView(BaseView):
         self.combo_primary.setCurrentIndex(0)
         self.txt_secondary.clear()
         self.txt_cues.clear()
+        self.chk_time_based.setChecked(False)
         self._set_editor_enabled(True)
         self.txt_name.setFocus()
 
@@ -188,6 +194,7 @@ class ExerciseDictionaryView(BaseView):
         self.combo_primary.setCurrentIndex(max(0, primary_idx))
         
         self.txt_secondary.setText(ex['secondary_muscles'] or "")
+        self.chk_time_based.setChecked(ex.get('tracks_time', False)) # <-- New
         self.txt_cues.setPlainText(ex['cues'] or "")
         self._set_editor_enabled(True)
 
@@ -195,10 +202,13 @@ class ExerciseDictionaryView(BaseView):
         name = self.txt_name.text().strip()
         if not name: return QMessageBox.warning(self, "Error", "Exercise name required.")
         
+        is_time_based = self.chk_time_based.isChecked() # <-- New
+        
         if self.current_ex_id:
             WorkoutDatabaseManager.update_exercise(
                 self.current_ex_id, name, "Hybrid", 
-                self.combo_primary.currentText(), self.txt_secondary.text(), self.txt_cues.toPlainText()
+                self.combo_primary.currentText(), self.txt_secondary.text(), 
+                self.txt_cues.toPlainText(), tracks_time=is_time_based
             )
         else:
             WorkoutDatabaseManager.add_exercise(
@@ -206,12 +216,13 @@ class ExerciseDictionaryView(BaseView):
                 primary=self.combo_primary.currentText(), 
                 secondary=self.txt_secondary.text(),
                 cues=self.txt_cues.toPlainText(),
+                tracks_time=is_time_based
             ) 
             
         self.refresh_data()
         event_bus.data_changed.emit()
         QMessageBox.information(self, "Saved", f"'{name}' saved successfully.")
-
+    
     def _delete_exercise(self):
         if not self.current_ex_id: return
         confirm = QMessageBox.question(self, "Confirm Delete", "Are you sure? This cannot be undone.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)

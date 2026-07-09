@@ -1,11 +1,13 @@
 # modules/workout/session.py
 import time
+from collections import defaultdict
 from typing import Dict, Optional
 from PyQt6.QtCore import QRunnable, QThreadPool, pyqtSlot
 
 from core.db_operations import WorkoutDatabaseManager
-from modules.integrations.fitbit_client import FitbitClient
 from core.events import event_bus
+from core.models import ExerciseMode
+from modules.integrations.fitbit_client import FitbitClient
 
 class FitbitSyncWorker(QRunnable):
     def __init__(self, workout_id, duration):
@@ -20,7 +22,7 @@ class FitbitSyncWorker(QRunnable):
             # Silently exit if Fitbit is not actually hooked up
             # Uncomment authentication check when API is ready
             if not self.client.authenticate(): return
-            
+
             metrics = self.client.get_workout_metrics(self.duration, time.time())
             if metrics:
                 event_bus.FITBIT_SYNC_SUCCESS.emit({'id': self.workout_id, 'metrics': metrics})
@@ -36,9 +38,11 @@ class WorkoutSessionController:
         self.current_program_id = None
         self.is_active = False
         self.start_time = 0
-        self.current_exercise_index = 0
-        self.current_set = 1
+
         self.exercises = []
+        self.queue = []
+        self.queue_index = 0
+
         self.session_logs = []
         self.template_name = ""
 
@@ -52,33 +56,50 @@ class WorkoutSessionController:
         self.current_program_id = program_id
 
     def undo_last_set(self) -> bool:
-        """Safely rewinds state by recalculating position from remaining logs."""
-        if not self.session_logs:
-            return False 
-            
-        self.session_logs.pop()
-        
-        # Rebuild state machine completely based on remaining valid logs
-        self.current_exercise_index = 0
-        self.current_set = 1
-        
-        for log in self.session_logs:
-            if not log.get('is_warmup', False):
-                if self.current_exercise_index < len(self.exercises):
-                    ex = self.exercises[self.current_exercise_index]
-                    if self.current_set < ex['target_sets']:
-                        self.current_set += 1
-                    else:
-                        self.current_exercise_index += 1
-                        self.current_set = 1
-                        
+        if not self.session_logs: return False
+
+        last_log = self.session_logs.pop()
+        if not last_log.get('is_warmup', False):
+            self.queue_index = max(0, self.queue_index - 1)
+
         return True
 
     def load_template(self, template_id: int):
         self.exercises = WorkoutDatabaseManager.get_routine_exercises(template_id)
         self.workout_id = template_id
-        self.current_exercise_index = 0
-        self.current_set = 1
+
+        # Build the Unrolled Queue
+        self.queue = []
+        groups = defaultdict(list)
+
+        # Group exercises (Standard goes in their own unique group, Circuits share groups)
+        for i, ex in enumerate(self.exercises):
+            mode = ex.get('mode', 'Standard')
+            if mode == ExerciseMode.STANDARD:
+                groups[f"Std_{i}"].append(ex)
+            else:
+                groups[f"{mode.name}_{ex.get('circuit_group', 0)}"].append(ex)
+
+        for gid, group_exs in groups.items():
+            mode = group_exs[0].get('mode', ExerciseMode.STANDARD)
+            max_sets = max([ex['target_sets'] for ex in group_exs])
+
+            if mode in [ExerciseMode.CIRCUIT, ExerciseMode.EMOM]:
+                for set_idx in range(1, max_sets + 1):
+                    for ex in group_exs:
+                        if set_idx <= ex['target_sets']:
+                            self.queue.append({
+                                'exercise': ex,
+                                'set_number': set_idx,
+                                'is_emom': mode == ExerciseMode.EMOM
+                            })
+            else:
+                # Sequential sets
+                for ex in group_exs:
+                    for set_idx in range(1, ex['target_sets'] + 1):
+                        self.queue.append({'exercise': ex, 'set_number': set_idx, 'is_emom': False})
+
+        self.queue_index = 0
         self.session_logs = []
         self.is_active = False
 
@@ -86,15 +107,23 @@ class WorkoutSessionController:
         if self.start_time is None or self.start_time == 0: self.start_time = time.time()
         self.is_active = not self.is_active
 
+    def get_current_task(self) -> Dict:
+        """Returns the current queue item containing the exercise and set number."""
+        if self.queue_index < len(self.queue):
+            return self.queue[self.queue_index]
+        return {}
+
     def get_current_exercise(self) -> Dict:
         if self.current_exercise_index < len(self.exercises): return self.exercises[self.current_exercise_index]
         return {}
 
     def log_set(self, reps: int, weight: float, rpe: float, is_warmup: bool = False):
-        exercise = self.get_current_exercise()
+        task = self.get_current_task()
+        exercise = task['exercise']
+
         log_entry = {
             "exercise": exercise['name'],
-            "set": self.current_set if not is_warmup else "W",
+            "set": task['set_number'] if not is_warmup else "W",
             "reps": reps,
             "weight": weight,
             "rpe": rpe,
@@ -103,16 +132,13 @@ class WorkoutSessionController:
             "target_hit": reps >= exercise['target_reps_min'] if not is_warmup else True
         }
         self.session_logs.append(log_entry)
-        
+
         if not is_warmup:
             if reps < exercise['target_reps_min']:
                 new_target = round((weight * 0.9) / 2.5) * 2.5
                 exercise['target_weight'] = new_target
-            
-            if self.current_set < exercise['target_sets']:
-                self.current_set += 1
-            else:
-                self._advance_exercise()
+
+            self.queue_index += 1
 
     def _advance_exercise(self):
         self.current_exercise_index += 1

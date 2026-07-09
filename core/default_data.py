@@ -122,42 +122,42 @@ def get_default_exercises():
         
         # --- DUMBBELL / ACCESSORY ---
         {
-            "category": "Dumbell", "name": "Dumbbell Bicep Curls", 
+            "category": "Dumbbell", "name": "Dumbbell Bicep Curls", 
             "primary_muscle": "biceps", "secondary_muscles": "forearms",
             "cues": "1. Pin elbows to your sides\n2. Achieve full extension at bottom\n3. Squeeze hard at the top"
         },
         {
-            "category": "Dumbell", "name": "Hammer Curls", 
+            "category": "Dumbbell", "name": "Hammer Curls", 
             "primary_muscle": "biceps", "secondary_muscles": "forearms",
             "cues": "1. Maintain neutral grip\n2. Use zero momentum\n3. Control the descent"
         },
         {
-            "category": "Dumbell", "name": "Overhead Tricep Extensions", 
+            "category": "Dumbbell", "name": "Overhead Tricep Extensions", 
             "primary_muscle": "triceps", "secondary_muscles": "",
             "cues": "1. Keep elbows tucked in\n2. Get a deep stretch at bottom\n3. Lock out fully at the top"
         },
         {
-            "category": "Dumbell", "name": "Tricep Pushdowns", 
+            "category": "Dumbbell", "name": "Tricep Pushdowns", 
             "primary_muscle": "triceps", "secondary_muscles": "",
             "cues": "1. Keep shoulders locked down\n2. Keep elbows fixed at sides\n3. Spread rope at the very bottom"
         },
         {
-            "category": "Dumbell", "name": "Lateral Raises", 
+            "category": "Dumbbell", "name": "Lateral Raises", 
             "primary_muscle": "shoulders", "secondary_muscles": "",
             "cues": "1. Slight forward lean\n2. Lead with the pinkies\n3. Control the negative drop"
         },
         {
-            "category": "Dumbell", "name": "Calf Raises", 
+            "category": "Dumbbell", "name": "Calf Raises", 
             "primary_muscle": "calves", "secondary_muscles": "",
             "cues": "1. Get a full stretch at the bottom\n2. Explode up onto toes\n3. Hold the top contraction for 1 second"
         },
         {
-            "category": "Dumbell", "name": "Hanging Leg Raises", 
+            "category": "Dumbbell", "name": "Hanging Leg Raises", 
             "primary_muscle": "core", "secondary_muscles": "forearms, quadriceps",
             "cues": "1. Maintain an active hang\n2. Eliminate all swinging\n3. Pull toes to bar (or 90 degrees)"
         },
         {
-            "category": "Dumbell", "name": "Farmer's Walk", 
+            "category": "Dumbbell", "name": "Farmer's Walk", 
             "primary_muscle": "forearms", "secondary_muscles": "core, upper-back, calves",
             "cues": "1. Chest up, shoulders back\n2. Take short, quick steps\n3. Try to crush the grip handles"
         }

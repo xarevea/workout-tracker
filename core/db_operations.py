@@ -5,8 +5,8 @@ from datetime import datetime
 
 from core.database import get_db_session
 from core.models import (
-    User, Exercise, RoutineTemplate, RoutineExercise, Equipment, Workout, 
-    WorkoutLog, BodyweightLog, Program, ProgramDay, ApiIntegration
+    User, Exercise, RoutineTemplate, RoutineExercise, Equipment, Workout,
+    WorkoutLog, BodyweightLog, Program, ProgramDay, ApiIntegration, ExerciseMode
 )
 
 class WorkoutDatabaseManager:
@@ -14,16 +14,16 @@ class WorkoutDatabaseManager:
     def get_all_exercises() -> list:
         with get_db_session() as session:
             exercises = session.query(Exercise).order_by(Exercise.name.asc()).all()
-            return [{'id': e.id, 'name': e.name, 'category': e.category, 'primary_muscle': e.primary_muscle, 
-                     'secondary_muscles': e.secondary_muscles, 'cues': e.cues, 
-                     'media_path': e.media_path} for e in exercises]
+            return [{'id': e.id, 'name': e.name, 'category': e.category, 'primary_muscle': e.primary_muscle,
+                     'secondary_muscles': e.secondary_muscles, 'cues': e.cues,
+                     'media_path': e.media_path, 'tracks_time': e.tracks_time} for e in exercises]
 
     @staticmethod
-    def add_exercise(name: str, primary: str, secondary: str, cues: str = "", media_path: str = ""):
+    def add_exercise(name: str, primary: str, secondary: str, cues: str = "", media_path: str = "", tracks_time: bool = False):
         with get_db_session() as session:
             if not session.query(Exercise).filter_by(name=name).first():
-                session.add(Exercise(name=name, category='Hybrid', primary_muscle=primary, 
-                                     secondary_muscles=secondary, cues=cues, media_path=media_path))
+                session.add(Exercise(name=name, category='Hybrid', primary_muscle=primary,
+                                     secondary_muscles=secondary, cues=cues, media_path=media_path, tracks_time=tracks_time))
 
     @staticmethod
     def save_routine_exercises(template_id: int, exercises_data: list):
@@ -61,9 +61,9 @@ class WorkoutDatabaseManager:
             inventory = {'barbell': 45.0, 'plates': [], 'raw_items': []}
             for item in items:
                 inventory['raw_items'].append({'name': item.name, 'weight_lbs': item.weight_lbs, 'quantity': item.quantity, 'is_barbell': item.is_barbell})
-                if item.is_barbell: 
+                if item.is_barbell:
                     inventory['barbell'] = item.weight_lbs
-                else: 
+                else:
                     inventory['plates'].extend([item.weight_lbs] * (item.quantity // 2))
             inventory['plates'].sort(reverse=True)
             return inventory
@@ -75,7 +75,7 @@ class WorkoutDatabaseManager:
             workout = Workout(user_id=user_id, name=workout_name, duration_minutes=duration_minutes, bodyweight_at_time=bodyweight, date=dt)
             session.add(workout)
             session.flush() # Get the new ID
-            
+
             for log in logs:
                 ex = session.query(Exercise).filter_by(name=log['exercise']).first()
                 if not ex: continue
@@ -105,10 +105,10 @@ class WorkoutDatabaseManager:
                 .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
                 .filter(Exercise.name == exercise_name, Workout.user_id == user_id)\
                 .order_by(Workout.date.asc()).all()
-            
+
             trends = {}
             for date_val, weight, reps in results:
-                date = date_val.split(' ')[0] 
+                date = date_val.split(' ')[0]
                 estimated_1rm = weight * (1 + (reps / 30.0))
                 if date not in trends or estimated_1rm > trends[date]:
                     trends[date] = estimated_1rm
@@ -151,8 +151,8 @@ class WorkoutDatabaseManager:
         with get_db_session() as session:
             results = session.query(RoutineExercise, Exercise)\
                 .join(Exercise, RoutineExercise.exercise_name == Exercise.name)\
-                .filter(RoutineExercise.template_id == template_id).all()
-            
+                .filter(RoutineExercise.template_id == template_id).order_by(RoutineExercise.id.asc()).all()
+
             return [{
                 'name': r.RoutineExercise.exercise_name,
                 'target_sets': r.RoutineExercise.target_sets,
@@ -160,16 +160,19 @@ class WorkoutDatabaseManager:
                 'target_reps_max': r.RoutineExercise.target_reps_max,
                 'target_weight': r.RoutineExercise.target_weight,
                 'rest_seconds': r.RoutineExercise.rest_seconds,
+                'mode': r.RoutineExercise.mode or ExerciseMode.STANDARD,
+                'circuit_group': r.RoutineExercise.circuit_group,
                 'primary_muscle': r.Exercise.primary_muscle,
                 'secondary_muscles': r.Exercise.secondary_muscles,
-                'cues': r.Exercise.cues
+                'cues': r.Exercise.cues,
+                'tracks_time': r.Exercise.tracks_time
             } for r in results]
 
     @staticmethod
     def log_bodyweight(user_id: int, date_str: str, weight: float):
         with get_db_session() as session:
             session.add(BodyweightLog(user_id=user_id, date=date_str, weight_lbs=weight))
-            
+
     @staticmethod
     def delete_bodyweight_log(user_id: int, date_str: str):
         with get_db_session() as session:
@@ -226,34 +229,40 @@ class WorkoutDatabaseManager:
                 session.add(prog)
                 session.flush()
                 program_id = prog.id
-            
+
             session.query(ProgramDay).filter_by(program_id=program_id).delete()
-            
+
             from collections import defaultdict
             days = defaultdict(list)
             for item in pool_data: days[item['day']].append(item)
-            
+
             day_map = {"Day 1": 1, "Day 2": 2, "Day 3": 3, "Day 4": 4, "Day 5": 5, "Day 6": 6, "Day 7": 7}
             for day_str, ex_list in days.items():
                 if day_str == "Unassigned": continue
                 day_num = day_map.get(day_str, 1)
                 t_name = f"{program_name} - {day_str}"
-                
+
                 template = session.query(RoutineTemplate).filter_by(name=t_name).first()
                 if not template:
                     template = RoutineTemplate(name=t_name, is_active=True)
                     session.add(template)
                     session.flush()
-                
+
                 session.query(RoutineExercise).filter_by(template_id=template.id).delete()
-                
+
                 for ex in ex_list:
                     session.add(RoutineExercise(
-                        template_id=template.id, exercise_name=ex['exercise'], target_sets=ex.get('sets', 3), 
-                        target_reps_min=ex.get('min_reps', 8), target_reps_max=ex.get('max_reps', 12), 
-                        target_weight=ex.get('weight', 0.0), rest_seconds=ex.get('rest', 90)
+                        template_id=template.id,
+                        exercise_name=ex['exercise'],
+                        target_sets=ex.get('sets', 3),
+                        target_reps_min=ex.get('min_reps', 8),
+                        target_reps_max=ex.get('max_reps', 12),
+                        target_weight=ex.get('weight', 0.0),
+                        rest_seconds=ex.get('rest', 90),
+                        mode=ex.get('mode', ExerciseMode.STANDARD),
+                        circuit_group=ex.get('circuit_group', 0)
                     ))
-                    
+
                 session.add(ProgramDay(program_id=program_id, day_number=day_num, template_id=template.id))
 
     @staticmethod
@@ -277,8 +286,8 @@ class WorkoutDatabaseManager:
             results = session.query(WorkoutLog, Exercise.name)\
                 .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
                 .filter(WorkoutLog.workout_id == workout_id).order_by(WorkoutLog.id.asc()).all()
-            return [{'id': r.WorkoutLog.id, 'exercise': r.name, 'set_number': r.WorkoutLog.set_number, 
-                     'reps': r.WorkoutLog.reps, 'weight_lbs': r.WorkoutLog.weight_lbs, 'rpe': r.WorkoutLog.rpe, 
+            return [{'id': r.WorkoutLog.id, 'exercise': r.name, 'set_number': r.WorkoutLog.set_number,
+                     'reps': r.WorkoutLog.reps, 'weight_lbs': r.WorkoutLog.weight_lbs, 'rpe': r.WorkoutLog.rpe,
                      'is_warmup': r.WorkoutLog.is_warmup} for r in results]
 
     @staticmethod
@@ -358,7 +367,7 @@ class WorkoutDatabaseManager:
             session.query(Equipment).filter_by(id=equipment_id).delete()
 
     @staticmethod
-    def update_exercise(ex_id: int, name: str, category: str, primary: str, secondary: str, cues: str, media_path: str = ""):
+    def update_exercise(ex_id: int, name: str, category: str, primary: str, secondary: str, cues: str, media_path: str = "", tracks_time: bool = False):
         with get_db_session() as session:
             ex = session.query(Exercise).filter_by(id=ex_id).first()
             if ex:
@@ -368,6 +377,7 @@ class WorkoutDatabaseManager:
                 ex.secondary_muscles = secondary
                 ex.cues = cues
                 ex.media_path = media_path
+                ex.tracks_time = tracks_time
 
     @staticmethod
     def delete_exercise(ex_id: int):
@@ -383,15 +393,15 @@ class WorkoutDatabaseManager:
                 .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
                 .filter(Workout.user_id == user_id)\
                 .order_by(Workout.date.desc(), WorkoutLog.id.asc()).all()
-            
+
             with open(file_path, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 # Write the Headers
                 writer.writerow([
-                    "Date", "Workout Name", "Duration (min)", "Bodyweight (lbs)", 
+                    "Date", "Workout Name", "Duration (min)", "Bodyweight (lbs)",
                     "Exercise", "Set", "Reps", "Weight (lbs)", "RPE", "Is Warmup"
                 ])
-                
+
                 # Write Rows
                 for w, log, ex in results:
                     writer.writerow([
@@ -412,4 +422,3 @@ class WorkoutDatabaseManager:
              .group_by('date_val').order_by('date_val').all()
             return {r.date_val: r.tonnage for r in results}
 
-                    

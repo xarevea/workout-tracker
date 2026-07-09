@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import Qt, QPropertyAnimation, QAbstractAnimation
 
+from core.db_operations import WorkoutDatabaseManager
 from core.events import event_bus
 from modules.workout.session import WorkoutSessionController
 from ui.components.active_tracker import ActiveTrackerWidget
@@ -167,7 +168,6 @@ class MainWindow(QMainWindow):
         self.user_combo.blockSignals(True)
         self.user_combo.clear()
         
-        from core.db_operations import WorkoutDatabaseManager
         users = WorkoutDatabaseManager.get_all_users()
         
         for u in users:
@@ -188,7 +188,6 @@ class MainWindow(QMainWindow):
         self.program_combo.blockSignals(True)
         self.program_combo.clear()
         
-        from core.db_operations import WorkoutDatabaseManager
         programs = WorkoutDatabaseManager.get_programs_for_user(user_id)
         
         active_idx = 0
@@ -222,7 +221,6 @@ class MainWindow(QMainWindow):
         program_id = self.program_combo.itemData(index)
         if not program_id or not user_id: return
         
-        from core.db_operations import WorkoutDatabaseManager
         WorkoutDatabaseManager.set_active_program(user_id, program_id)
         
         # CORRECT PyQt6 Event emission
