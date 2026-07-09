@@ -20,28 +20,43 @@ class ProgramScheduleList(QListWidget):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setDropIndicatorShown(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat('application/x-qabstractitemmodeldatalist'):
+            event.accept()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat('application/x-qabstractitemmodeldatalist'):
+            event.accept()
+        else:
+            super().dragMoveEvent(event)
 
     def dropEvent(self, event):
         if event.source() == self:
             # Reordering internally
             super().dropEvent(event)
-            self.scheduleChanged.emit()
+            self.scheduleChanged.emit() # Safely alerts the parent view without referencing MainWindow
+            
         elif event.source() is not None:
             # Dropped from Exercise Bank QListWidget
-            items = event.source().selectedItems()
-            for item in items:
+            drop_row = self.indexAt(event.position().toPoint()).row()
+            if drop_row == -1: drop_row = self.count()
+
+            for item in event.source().selectedItems():
                 ex_name = item.data(Qt.ItemDataRole.UserRole)
                 if not ex_name: ex_name = item.text()
-                
-                drop_row = self.indexAt(event.position().toPoint()).row()
-                if drop_row == -1: drop_row = self.count()
 
                 new_item = QListWidgetItem(ex_name)
                 new_item.setData(Qt.ItemDataRole.UserRole, ex_name)
                 self.insertItem(drop_row, new_item)
+                drop_row += 1
+                
             event.acceptProposedAction()
             self.scheduleChanged.emit()
 
@@ -372,8 +387,15 @@ class ProgramSandboxView(BaseView):
             if search_text and search_text not in name.lower(): continue
                 
             if selected_bodypart != "all muscles":
-                targets = MuscleMapper.REGION_MAP.get(selected_bodypart.capitalize(), [selected_bodypart])
-                if not any(t in primary or t in secondary for t in targets):
+                # FIX: Get the targets and ensure everything is space-separated instead of hyphens
+                targets = MuscleMapper.REGION_MAP.get(selected_bodypart.title(), [])
+                norm_targets = [t.replace('-', ' ').lower() for t in targets] + [selected_bodypart]
+                
+                norm_pri = primary.replace('-', ' ')
+                norm_sec = secondary.replace('-', ' ')
+                
+                # Check if ANY target is inside the primary or secondary strings
+                if not any(t in norm_pri or t in norm_sec for t in norm_targets):
                     continue
                     
             if self.show_balance_suggestions and primary in self.neglected_muscles:
@@ -440,11 +462,20 @@ class ProgramSandboxView(BaseView):
             self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
             
         if active_view == "Overall Program":
-            core_muscles = ["chest", "latissimus", "shoulders", "quadriceps", "hamstrings", "core"]
-            self.neglected_muscles = [m for m in core_muscles if volume_map.get(m, 0) < 3]
+            # Map raw volume strings to broad regions
+            region_volume = {r.lower(): 0 for r in MuscleMapper.REGION_MAP.keys()}
+            for k, v in volume_map.items():
+                k_lower = k.lower().replace(' ', '-')
+                for region, slugs in MuscleMapper.REGION_MAP.items():
+                    if k_lower == region.lower() or k_lower in slugs:
+                        region_volume[region.lower()] += v
+                        break
+
+            # Find neglected top-level regions
+            self.neglected_muscles = [m for m in region_volume.keys() if region_volume.get(m, 0) < 3]
 
             if not exercises_data:
-                self.lbl_assistant.setText("<b>Assistant:</b> Add exercises to the pool to see feedback.")
+                self.lbl_assistant.setText("<b>Assistant:</b> Add exercises to the schedule to see feedback.")
                 self.lbl_assistant.setStyleSheet("color: #2196F3;")
             elif self.neglected_muscles:
                 self.lbl_assistant.setText(f"<b>Assistant:</b> Neglected areas: {', '.join([m.title() for m in self.neglected_muscles])}.")

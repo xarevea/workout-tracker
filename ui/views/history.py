@@ -3,10 +3,12 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QPushButton, QMessageBox, QSplitter,
     QDialog, QLineEdit, QDateEdit, QSpinBox, QComboBox, QDoubleSpinBox
 )
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QThreadPool
+
 from core.db_operations import WorkoutDatabaseManager
-from ui.views.base_view import BaseView
 from core.events import event_bus
+from ui.views.base_view import BaseView
+from utils.threads import Worker
 
 class ManualWorkoutEntryDialog(QDialog):
     def __init__(self, user_id, parent=None):
@@ -161,31 +163,54 @@ class WorkoutHistoryView(BaseView):
     def refresh_data(self):
         self.workout_table.blockSignals(True)
         self.workout_table.setRowCount(0)
+        self.log_table.setRowCount(0)
         
-        workouts = WorkoutDatabaseManager.get_workout_history(self.current_user_id)
+        # Give user visual feedback that data is loading
+        self.lbl_details.setText("<b>Loading Workout History...</b>") 
+        
+        # Dispatch background worker
+        worker = Worker(self._fetch_history)
+        worker.signals.result.connect(self._render_history)
+        QThreadPool.globalInstance().start(worker)
+
+    def _fetch_history(self):
+        """Runs on Background Thread - Safe from freezing UI."""
+        return WorkoutDatabaseManager.get_workout_history(self.current_user_id)
+
+    def _render_history(self, workouts):
+        """Runs on Main UI Thread - Paints the retrieved data."""
         for i, w in enumerate(workouts):
             self.workout_table.insertRow(i)
             self.workout_table.setItem(i, 0, QTableWidgetItem(w['date'].split(" ")[0]))
             self.workout_table.setItem(i, 1, QTableWidgetItem(w['name']))
             self.workout_table.setItem(i, 2, QTableWidgetItem(f"{w['duration_minutes']} min"))
             
-            # Store ID invisibly
+            # Store ID invisibly for querying specific logs later
             self.workout_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, w['id'])
             
         self.workout_table.blockSignals(False)
-        self.log_table.setRowCount(0)
+        self.lbl_details.setText("<b>Select a workout to view details</b>")
 
     def _on_workout_selected(self):
+        """Dispatches a thread to fetch specific logs when a row is clicked."""
         row = self.workout_table.currentRow()
         if row < 0: return
         
         workout_id = self.workout_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         name = self.workout_table.item(row, 1).text()
-        self.lbl_details.setText(f"<b>Details for: {name}</b>")
         
-        logs = WorkoutDatabaseManager.get_workout_logs(workout_id)
+        self.lbl_details.setText(f"<b>Loading Details for: {name}...</b>")
         self.log_table.setRowCount(0)
         
+        # Fetching specific logs can be heavy, offload it
+        worker = Worker(WorkoutDatabaseManager.get_workout_logs, workout_id)
+        # Using lambda allows us to pass the 'name' parameter alongside the result
+        worker.signals.result.connect(lambda logs, n=name: self._render_logs(logs, n))
+        QThreadPool.globalInstance().start(worker)
+
+    def _render_logs(self, logs, name):
+        """Paints the detailed logs on the Main Thread."""
+        self.lbl_details.setText(f"<b>Details for: {name}</b>")
         for i, log in enumerate(logs):
             self.log_table.insertRow(i)
             self.log_table.setItem(i, 0, QTableWidgetItem(log['exercise']))

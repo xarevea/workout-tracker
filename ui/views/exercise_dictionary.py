@@ -1,15 +1,19 @@
 # ========================================
 # FILE PATH: ui/views/exercise_dictionary.py
 # ========================================
+import qtawesome as qta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-    QListWidget, QComboBox, QPlainTextEdit, QSplitter, QMessageBox
+    QListWidget, QComboBox, QPlainTextEdit, QSplitter, QMessageBox,
+    QFileDialog,
 )
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QMovie
+
 from core.db_operations import WorkoutDatabaseManager
-from ui.views.base_view import BaseView
-from ui.components.body_heatmap import MuscleMapper
 from core.events import event_bus
+from ui.components.body_heatmap import MuscleMapper
+from ui.views.base_view import BaseView
 
 class ExerciseDictionaryView(BaseView):
     def __init__(self, parent=None):
@@ -53,10 +57,7 @@ class ExerciseDictionaryView(BaseView):
         self.right_layout.addWidget(QLabel("Exercise Name:"))
         self.right_layout.addWidget(self.txt_name)
         
-        muscle_groups = [
-            "", "Chest", "Upper-Back", "Latissimus", "Lower-Back", "Shoulders", 
-            "Quadriceps", "Hamstrings", "Calves", "Glutes", "Biceps", "Triceps", "Forearms", "Core"
-        ]
+        muscle_groups = MuscleMapper.get_ui_muscle_list(include_empty=True)
         
         self.combo_primary = QComboBox()
         self.combo_primary.addItems(muscle_groups)
@@ -87,12 +88,52 @@ class ExerciseDictionaryView(BaseView):
         action_layout.addWidget(self.btn_save)
         
         self.right_layout.addLayout(action_layout)
+
+        # --- MEDIA PLAYER ---
+        self.lbl_media = QLabel("No Media Selected")
+        self.lbl_media.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_media.setFixedSize(250, 250)
+        self.lbl_media.setStyleSheet("background-color: #111111; border: 1px solid #333; border-radius: 8px;")
+        
+        self.txt_media_path = QLineEdit()
+        self.txt_media_path.setPlaceholderText("Path to GIF/Image...")
+        
+        btn_browse = QPushButton(qta.icon('fa5s.folder-open', color='white'), "")
+        btn_browse.clicked.connect(self._browse_media)
+        
+        media_input_layout = QHBoxLayout()
+        media_input_layout.addWidget(self.txt_media_path)
+        media_input_layout.addWidget(btn_browse)
+
+        self.right_layout.addWidget(self.lbl_media)
+        self.right_layout.addLayout(media_input_layout)
+
         splitter.addWidget(right_panel)
         
         splitter.setSizes([300, 500])
         layout.addWidget(splitter)
         
         self._set_editor_enabled(False)
+
+    def _browse_media(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Exercise Media", "", "Images/GIFs (*.png *.jpg *.jpeg *.gif)")
+        if file_path:
+            self.txt_media_path.setText(file_path)
+            self._load_media(file_path)
+
+    def _load_media(self, path):
+        if not path:
+            self.lbl_media.setText("No Media Selected")
+            return
+            
+        if path.lower().endswith('.gif'):
+            self.movie = QMovie(path)
+            self.lbl_media.setMovie(self.movie)
+            self.movie.start()
+        else:
+            from PyQt6.QtGui import QPixmap
+            pix = QPixmap(path).scaled(self.lbl_media.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.lbl_media.setPixmap(pix)
 
     def refresh_data(self):
         self.all_exercises = WorkoutDatabaseManager.get_all_exercises()

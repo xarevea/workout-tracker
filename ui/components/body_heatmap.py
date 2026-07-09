@@ -109,11 +109,11 @@ class AspectRatioSvgWidget(QWidget):
 class MuscleMapper:
     REGION_MAP = {
         "Chest": ["chest"],
-        "Back": ["upper-back", "latissimus", "trapezius", "lower-back"],
-        "Core": ["abs", "obliques"],
-        "Arms": ["biceps", "triceps", "forearm"],
-        "Shoulders": ["deltoids"],
-        "Legs": ["quadriceps", "hamstring", "calves", "gluteal", "adductors"],
+        "Back": ["upper-back", "latissimus", "trapezius", "lower-back", "back"],
+        "Core": ["abs", "obliques", "core"],
+        "Arms": ["biceps", "triceps", "forearms", "arms"],
+        "Shoulders": ["deltoids", "shoulders"],
+        "Legs": ["quadriceps", "hamstrings", "calves", "glutes", "adductors", "legs"],
     }
     
     @staticmethod
@@ -125,8 +125,24 @@ class MuscleMapper:
         elif sets <= 20: 
             return '#4CAF50'
         else: 
-            return '#F44336'         
+            return '#F44336'   
 
+    @staticmethod
+    def get_ui_muscle_list(include_empty=True) -> list:
+        """
+        Generates a single-source-of-truth list for all UI dropdowns.
+        Extracts both broad regions (e.g. 'Back') and specific muscles (e.g. 'Upper Back').
+        """
+        regions = list(MuscleMapper.REGION_MAP.keys())
+        muscles = []
+        for slugs in MuscleMapper.REGION_MAP.values():
+            muscles.extend([s.replace('-', ' ').title() for s in slugs])
+        
+        # Merge, remove duplicates, and sort alphabetically
+        combined = sorted(list(set(regions + muscles)))
+        if include_empty:
+            combined.insert(0, "")
+        return combined     
 
 class AnatomicalHeatmap(QWidget):
     

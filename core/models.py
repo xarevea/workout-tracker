@@ -35,6 +35,7 @@ class Exercise(Base):
     cues = Column(String)
     tracks_weight = Column(Boolean, default=True)
     tracks_time = Column(Boolean, default=False)
+    media_path = Column(String)
 
 class Workout(Base):
     __tablename__ = 'workouts'

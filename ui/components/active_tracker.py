@@ -13,13 +13,14 @@ from PyQt6.QtGui import QPainter, QPen, QColor, QFont
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import QSystemTrayIcon, QStyle
 
-from ui.components.body_heatmap import AnatomicalHeatmap
-from ui.components.review_dialog import WorkoutReviewDialog
-from modules.equipment.plate_calculator import PlateCalculator
 from core.db_operations import WorkoutDatabaseManager
 from core.events import event_bus
+from modules.equipment.plate_calculator import PlateCalculator
 from modules.progression.engine import ProgressionEngine
 from modules.workout.session import FitbitSyncWorker
+from ui.components.barbell_view import BarbellVisualizer
+from ui.components.body_heatmap import AnatomicalHeatmap
+from ui.components.review_dialog import WorkoutReviewDialog
 
 class MiniRestTimer(QWidget):
     def __init__(self, parent=None):
@@ -208,8 +209,7 @@ class ActiveTrackerWidget(QWidget):
         
         self.lbl_exercise_name = QLabel("Select a template...")
         self.lbl_exercise_name.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        self.lbl_loadout = QLabel("") 
-        self.lbl_loadout.setStyleSheet("color: #2196F3; font-weight: bold;")
+        self.barbell_visualizer = BarbellVisualizer()
         self.lbl_set_tracker = QLabel("-")
 
         self.cues_list = QListWidget()
@@ -219,7 +219,7 @@ class ActiveTrackerWidget(QWidget):
         text_layout.addWidget(self.lbl_progress)
         text_layout.addWidget(self.lbl_exercise_name)
         text_layout.addWidget(self.cues_list)
-        text_layout.addWidget(self.lbl_loadout)
+        text_layout.addWidget(self.barbell_visualizer )
         text_layout.addWidget(self.lbl_set_tracker)
         text_layout.addStretch() 
         
@@ -403,7 +403,6 @@ class ActiveTrackerWidget(QWidget):
         if not current_ex:
             self.lbl_progress.setText("WORKOUT COMPLETE")
             self.lbl_exercise_name.setText("Workout Complete!")
-            self.lbl_loadout.setText("")
             self.lbl_set_tracker.setText("-")
             self.btn_log.setEnabled(False)
             self.btn_play_pause.setEnabled(False)
@@ -436,10 +435,11 @@ class ActiveTrackerWidget(QWidget):
         self.chk_warmup.setChecked(False) 
 
         loadout = PlateCalculator.calculate_loadout(current_ex['target_weight'], user_id=self.controller.current_user_id)
-        if loadout is not None and len(loadout) > 0:
-            self.lbl_loadout.setText(f"Loadout per side: [ {' | '.join([f'{p}lb' for p in loadout])} ]")
+        if loadout is not None:
+            self.barbell_visualizer.set_loadout(loadout)
+            self.barbell_visualizer.show()
         else:
-            self.lbl_loadout.setText("")
+            self.barbell_visualizer.hide()
 
         volume_map = {}
         if current_ex.get('primary_muscle'): volume_map[current_ex['primary_muscle']] = 15 

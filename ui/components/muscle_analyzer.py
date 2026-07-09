@@ -7,6 +7,7 @@ from matplotlib.figure import Figure
 import numpy as np
 
 from core.db_operations import WorkoutDatabaseManager
+from ui.components.body_heatmap import MuscleMapper
 
 class MuscleCoverageDialog(QDialog):
     def __init__(self, template_id, template_name, parent=None):
@@ -26,21 +27,35 @@ class MuscleCoverageDialog(QDialog):
     def _analyze_coverage(self, template_id):
         exercises = WorkoutDatabaseManager.get_routine_exercises(template_id)
         
-        volume_map = {
-            "Chest": 0, "Back": 0, "Quads": 0, "Hamstrings": 0, 
-            "Calves": 0, "Shoulders": 0, "Biceps": 0, "Triceps": 0, "Core": 0
-        }
+        volume_map = {region: 0 for region in MuscleMapper.REGION_MAP.keys()}
 
         for ex in exercises:
             sets = ex['target_sets']
-            if ex['primary_muscle'] in volume_map:
-                volume_map[ex['primary_muscle']] += sets
-                
+            primary = ex['primary_muscle']
+            
+            if primary:
+                primary_title = primary.title()
+                if primary_title in volume_map:
+                    # It's already a top-level region (e.g. "Chest")
+                    volume_map[primary_title] += sets
+                else:
+                    # Find which region this specific muscle belongs to
+                    for region, slugs in MuscleMapper.REGION_MAP.items():
+                        if primary.lower().replace(' ', '-') in slugs:
+                            volume_map[region] += sets
+                            break
+                            
             if ex['secondary_muscles']:
                 secondaries = [s.strip() for s in ex['secondary_muscles'].split(',')]
                 for sec in secondaries:
-                    if sec in volume_map:
-                        volume_map[sec] += (sets * 0.5)
+                    sec_title = sec.title()
+                    if sec_title in volume_map:
+                        volume_map[sec_title] += (sets * 0.5)
+                    else:
+                        for region, slugs in MuscleMapper.REGION_MAP.items():
+                            if sec.lower().replace(' ', '-') in slugs:
+                                volume_map[region] += (sets * 0.5)
+                                break
 
         self._plot_radar_chart(volume_map)
 

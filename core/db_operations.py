@@ -1,4 +1,4 @@
-
+import csv
 from typing import List, Dict
 from sqlalchemy import func
 from datetime import datetime
@@ -15,14 +15,16 @@ class WorkoutDatabaseManager:
         with get_db_session() as session:
             exercises = session.query(Exercise).order_by(Exercise.name.asc()).all()
             return [{'id': e.id, 'name': e.name, 'category': e.category, 'primary_muscle': e.primary_muscle, 
-                     'secondary_muscles': e.secondary_muscles, 'cues': e.cues} for e in exercises]
+                     'secondary_muscles': e.secondary_muscles, 'cues': e.cues, 
+                     'media_path': e.media_path} for e in exercises]
 
     @staticmethod
-    def add_exercise(name: str, primary: str, secondary: str, cues: str = ""):
+    def add_exercise(name: str, primary: str, secondary: str, cues: str = "", media_path: str = ""):
         with get_db_session() as session:
             if not session.query(Exercise).filter_by(name=name).first():
-                session.add(Exercise(name=name, category='Hybrid', primary_muscle=primary, secondary_muscles=secondary, cues=cues))
-                
+                session.add(Exercise(name=name, category='Hybrid', primary_muscle=primary, 
+                                     secondary_muscles=secondary, cues=cues, media_path=media_path))
+
     @staticmethod
     def save_routine_exercises(template_id: int, exercises_data: list):
         with get_db_session() as session:
@@ -356,7 +358,7 @@ class WorkoutDatabaseManager:
             session.query(Equipment).filter_by(id=equipment_id).delete()
 
     @staticmethod
-    def update_exercise(ex_id: int, name: str, category: str, primary: str, secondary: str, cues: str):
+    def update_exercise(ex_id: int, name: str, category: str, primary: str, secondary: str, cues: str, media_path: str = ""):
         with get_db_session() as session:
             ex = session.query(Exercise).filter_by(id=ex_id).first()
             if ex:
@@ -365,8 +367,49 @@ class WorkoutDatabaseManager:
                 ex.primary_muscle = primary
                 ex.secondary_muscles = secondary
                 ex.cues = cues
+                ex.media_path = media_path
 
     @staticmethod
     def delete_exercise(ex_id: int):
         with get_db_session() as session:
             session.query(Exercise).filter_by(id=ex_id).delete()
+
+    @staticmethod
+    def export_workouts_to_csv(user_id: int, file_path: str):
+        with get_db_session() as session:
+            # Join the tables to flatten the relational data
+            results = session.query(Workout, WorkoutLog, Exercise)\
+                .join(WorkoutLog, Workout.id == WorkoutLog.workout_id)\
+                .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
+                .filter(Workout.user_id == user_id)\
+                .order_by(Workout.date.desc(), WorkoutLog.id.asc()).all()
+            
+            with open(file_path, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                # Write the Headers
+                writer.writerow([
+                    "Date", "Workout Name", "Duration (min)", "Bodyweight (lbs)", 
+                    "Exercise", "Set", "Reps", "Weight (lbs)", "RPE", "Is Warmup"
+                ])
+                
+                # Write Rows
+                for w, log, ex in results:
+                    writer.writerow([
+                        w.date, w.name, w.duration_minutes, w.bodyweight_at_time,
+                        ex.name, log.set_number, log.reps, log.weight_lbs, log.rpe, log.is_warmup
+                    ])
+
+    @staticmethod
+    def get_daily_tonnage(user_id: int) -> dict:
+        """Returns a dict of { 'YYYY-MM-DD': total_tonnage } for ACWR calculation."""
+        from sqlalchemy import func
+        with get_db_session() as session:
+            results = session.query(
+                func.date(Workout.date).label('date_val'),
+                func.sum(WorkoutLog.reps * WorkoutLog.weight_lbs).label('tonnage')
+            ).join(WorkoutLog, Workout.id == WorkoutLog.workout_id)\
+             .filter(Workout.user_id == user_id, WorkoutLog.is_warmup == False)\
+             .group_by('date_val').order_by('date_val').all()
+            return {r.date_val: r.tonnage for r in results}
+
+                    

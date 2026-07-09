@@ -1,11 +1,12 @@
 # ui/main_window.py
+import qtawesome as qta
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
     QPushButton, QStackedWidget, QLabel, QSystemTrayIcon, QMenu,
-    QComboBox, QInputDialog, QMessageBox
+    QComboBox, QInputDialog, QMessageBox, QGraphicsOpacityEffect
 )
 from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QPropertyAnimation, QAbstractAnimation
 
 from core.events import event_bus
 from modules.workout.session import WorkoutSessionController
@@ -13,6 +14,7 @@ from ui.components.active_tracker import ActiveTrackerWidget
 from ui.components.minimap import WorkoutMinimap
 from ui.views.base_view import BaseView
 from ui.views.bodyweight_hub import BodyweightHubView
+from ui.views.clinical_analytics import ClinicalAnalyticsView
 from ui.views.dashboard import DashboardView
 from ui.views.equipment import EquipmentView
 from ui.views.exercise_dictionary import ExerciseDictionaryView
@@ -21,6 +23,34 @@ from ui.views.program_sandbox import ProgramSandboxView
 from ui.views.routine_builder import RoutineBuilderView
 from ui.views.settings import SettingsView
 from utils.gui_utils import add_button_above_stretch, create_sidebar_button
+
+class FadingStackedWidget(QStackedWidget):
+    """A polished Stacked Widget that fades between views."""
+    def setCurrentIndex(self, index):
+        if index == self.currentIndex(): return
+        
+        self.fade_out = QGraphicsOpacityEffect(self)
+        self.currentWidget().setGraphicsEffect(self.fade_out)
+        
+        self.anim_out = QPropertyAnimation(self.fade_out, b"opacity")
+        self.anim_out.setDuration(100) # Fast 100ms fade
+        self.anim_out.setStartValue(1.0)
+        self.anim_out.setEndValue(0.0)
+        
+        self.anim_out.finished.connect(lambda: self._on_fade_out_done(index))
+        self.anim_out.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+
+    def _on_fade_out_done(self, index):
+        super().setCurrentIndex(index)
+        
+        self.fade_in = QGraphicsOpacityEffect(self)
+        self.currentWidget().setGraphicsEffect(self.fade_in)
+        
+        self.anim_in = QPropertyAnimation(self.fade_in, b"opacity")
+        self.anim_in.setDuration(150) # 150ms fade in
+        self.anim_in.setStartValue(0.0)
+        self.anim_in.setEndValue(1.0)
+        self.anim_in.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
 class WorkoutContainer(BaseView):
     def __init__(self, minimap, active_tracker, parent=None):
@@ -238,11 +268,11 @@ class MainWindow(QMainWindow):
     def _setup_stacked_views(self):
         self._next_idx = 0
         self._stacked_widget_list = []
-        self.stacked_widget = QStackedWidget()
+        self.stacked_widget = FadingStackedWidget() 
         
         # 1. Dashboard
         self.dashboard_view = DashboardView()
-        self._add_stacked_widget(self.dashboard_view, "Dashboard")
+        self._add_stacked_widget(self.dashboard_view, "Dashboard", qta.icon('fa5s.chart-line', color='white'))
         
         # 2. Active Workout
         self.workout_view = QWidget()
@@ -283,16 +313,20 @@ class MainWindow(QMainWindow):
         # 8. Settings
         self.settings_view = SettingsView()
         self._add_stacked_widget(self.settings_view, "Settings")
+
+        # 9. Clinical Analytics
+        self.clinical_view = ClinicalAnalyticsView()
+        self._add_stacked_widget(self.clinical_view, "Clinical Analytics", qta.icon('fa5s.heartbeat', color='#FF9800'))
         
         self._switch_view(0) # Initialize default view
 
-    def _add_stacked_widget(self, widget_view, btn_name: str):
-        # Add to widgets
+    def _add_stacked_widget(self, widget_view, btn_name: str, icon=None):
         self._stacked_widget_list.append(widget_view)
         self.stacked_widget.addWidget(widget_view)
 
-        # Add and connect button
         this_button = create_sidebar_button(btn_name)
+        if icon: 
+            this_button.setIcon(icon)
         this_button.clicked.connect(lambda *args, index=self._next_idx: self._switch_view(index))
         self.nav_buttons.append(this_button)
 

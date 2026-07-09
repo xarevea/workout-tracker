@@ -3,7 +3,7 @@
 # ========================================
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-    QTabWidget, QMessageBox
+    QTabWidget, QMessageBox, QFileDialog
 )
 from core.db_operations import WorkoutDatabaseManager
 from ui.views.base_view import BaseView
@@ -63,12 +63,23 @@ class SettingsView(BaseView):
         info = QLabel("<b>Data Management</b><br>Backup or export your entire workout history.")
         layout.addWidget(info)
         
-        btn_export = QPushButton("Export Database to CSV (Coming Soon)")
-        btn_export.setEnabled(False)
+        btn_export = QPushButton("Export Workout History to CSV")
+        btn_export.setStyleSheet("background-color: #2196F3; color: white; padding: 8px; font-weight: bold;")
+        btn_export.clicked.connect(self._export_to_csv)
         layout.addWidget(btn_export)
         
         layout.addStretch()
         self.tabs.addTab(tab, "Data Management")
+
+    def _export_to_csv(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Workout History", "hybrid_tracker_history.csv", "CSV Files (*.csv)")
+        
+        if file_path:
+            try:
+                WorkoutDatabaseManager.export_workouts_to_csv(self.current_user_id, file_path)
+                QMessageBox.information(self, "Success", f"Data exported successfully to:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Failed", f"An error occurred during export:\n{e}")
 
     def _save_api_keys(self):
         WorkoutDatabaseManager.save_api_credentials("Fitbit", self.client_id_input.text(), self.client_secret_input.text())
