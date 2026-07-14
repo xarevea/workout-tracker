@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QDialog, QLineEdit, QDateEdit, QSpinBox, QComboBox, QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt, QDate, QThreadPool
+from PyQt6.QtGui import QColor
 
 from core.db_operations import WorkoutDatabaseManager
 from core.events import event_bus
@@ -15,10 +16,9 @@ class ManualWorkoutEntryDialog(QDialog):
         super().__init__(parent)
         self.user_id = user_id
         self.setWindowTitle("Log Past Workout")
-        self.resize(700, 500)
+        self.resize(850, 500)
         layout = QVBoxLayout(self)
 
-        # Header Info
         header = QHBoxLayout()
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
@@ -37,13 +37,11 @@ class ManualWorkoutEntryDialog(QDialog):
         header.addWidget(QLabel("Bodyweight:")); header.addWidget(self.spin_bw)
         layout.addLayout(header)
 
-        # Log Table
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Exercise", "Set", "Reps", "Weight", "RPE", ""])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Exercise", "Set", "Reps", "Weight", "RPE", "Notes", ""])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table)
 
-        # Controls
         controls = QHBoxLayout()
         btn_add_row = QPushButton("+ Add Set")
         btn_add_row.clicked.connect(self._add_row)
@@ -57,7 +55,7 @@ class ManualWorkoutEntryDialog(QDialog):
         layout.addLayout(controls)
 
         self.exercise_bank = [ex['name'] for ex in WorkoutDatabaseManager.get_all_exercises()]
-        self._add_row() # Initial empty row
+        self._add_row()
 
     def _add_row(self):
         row = self.table.rowCount()
@@ -68,10 +66,11 @@ class ManualWorkoutEntryDialog(QDialog):
         spin_reps = QSpinBox(); spin_reps.setValue(10)
         spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1500)
         spin_rpe = QDoubleSpinBox(); spin_rpe.setRange(1, 10); spin_rpe.setValue(8)
+        txt_notes = QLineEdit()
 
         btn_del = QPushButton("X"); btn_del.setStyleSheet("color: red;")
         btn_del.clicked.connect(lambda checked, b=btn_del: self.table.removeRow(
-            next((i for i in range(self.table.rowCount()) if self.table.cellWidget(i, 5) == b), -1)
+            next((i for i in range(self.table.rowCount()) if self.table.cellWidget(i, 6) == b), -1)
         ))
 
         self.table.setCellWidget(row, 0, combo_ex)
@@ -79,7 +78,8 @@ class ManualWorkoutEntryDialog(QDialog):
         self.table.setCellWidget(row, 2, spin_reps)
         self.table.setCellWidget(row, 3, spin_wt)
         self.table.setCellWidget(row, 4, spin_rpe)
-        self.table.setCellWidget(row, 5, btn_del)
+        self.table.setCellWidget(row, 5, txt_notes)
+        self.table.setCellWidget(row, 6, btn_del)
 
     def _save(self):
         if not self.txt_name.text().strip():
@@ -94,12 +94,12 @@ class ManualWorkoutEntryDialog(QDialog):
                 "reps": self.table.cellWidget(i, 2).value(),
                 "weight": self.table.cellWidget(i, 3).value(),
                 "rpe": self.table.cellWidget(i, 4).value(),
-                "is_warmup": False
+                "is_warmup": False,
+                "notes": self.table.cellWidget(i, 5).text().strip()
             })
 
         date_str = self.date_edit.date().toString("yyyy-MM-dd") + " 12:00:00"
 
-        # Passes date_str directly now, removing need for the raw UPDATE query hack
         WorkoutDatabaseManager.save_completed_workout(
             user_id=self.user_id,
             workout_name=self.txt_name.text(),
@@ -110,7 +110,6 @@ class ManualWorkoutEntryDialog(QDialog):
         )
         self.accept()
 
-
 class WorkoutHistoryView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -119,7 +118,6 @@ class WorkoutHistoryView(BaseView):
         layout = QHBoxLayout(self)
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # --- LEFT: Workout List ---
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(QLabel("<b>Past Workouts</b>"))
@@ -147,14 +145,13 @@ class WorkoutHistoryView(BaseView):
 
         splitter.addWidget(left_panel)
 
-        # --- RIGHT: Workout Logs ---
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         self.lbl_details = QLabel("<b>Workout Details</b>")
         right_layout.addWidget(self.lbl_details)
 
-        self.log_table = QTableWidget(0, 5)
-        self.log_table.setHorizontalHeaderLabels(["Exercise", "Set", "Reps", "Weight", "RPE"])
+        self.log_table = QTableWidget(0, 6)
+        self.log_table.setHorizontalHeaderLabels(["Exercise", "Set", "Reps", "Weight", "RPE", "Notes"])
         self.log_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         right_layout.addWidget(self.log_table)
 
@@ -166,35 +163,27 @@ class WorkoutHistoryView(BaseView):
         self.workout_table.blockSignals(True)
         self.workout_table.setRowCount(0)
         self.log_table.setRowCount(0)
-
-        # Give user visual feedback that data is loading
         self.lbl_details.setText("<b>Loading Workout History...</b>")
 
-        # Dispatch background worker
         worker = Worker(self._fetch_history)
         worker.signals.result.connect(self._render_history)
         QThreadPool.globalInstance().start(worker)
 
     def _fetch_history(self):
-        """Runs on Background Thread - Safe from freezing UI."""
         return WorkoutDatabaseManager.get_workout_history(self.current_user_id)
 
     def _render_history(self, workouts):
-        """Runs on Main UI Thread - Paints the retrieved data."""
         for i, w in enumerate(workouts):
             self.workout_table.insertRow(i)
             self.workout_table.setItem(i, 0, QTableWidgetItem(w['date'].split(" ")[0]))
             self.workout_table.setItem(i, 1, QTableWidgetItem(w['name']))
             self.workout_table.setItem(i, 2, QTableWidgetItem(f"{w['duration_minutes']} min"))
-
-            # Store ID invisibly for querying specific logs later
             self.workout_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, w['id'])
 
         self.workout_table.blockSignals(False)
         self.lbl_details.setText("<b>Select a workout to view details</b>")
 
     def _on_workout_selected(self):
-        """Dispatches a thread to fetch specific logs when a row is clicked."""
         row = self.workout_table.currentRow()
         if row < 0: return
 
@@ -204,14 +193,11 @@ class WorkoutHistoryView(BaseView):
         self.lbl_details.setText(f"<b>Loading Details for: {name}...</b>")
         self.log_table.setRowCount(0)
 
-        # Fetching specific logs can be heavy, offload it
         worker = Worker(WorkoutDatabaseManager.get_workout_logs, workout_id)
-        # Using lambda allows us to pass the 'name' parameter alongside the result
         worker.signals.result.connect(lambda logs, n=name: self._render_logs(logs, n))
         QThreadPool.globalInstance().start(worker)
 
     def _render_logs(self, logs, name):
-        """Paints the detailed logs on the Main Thread."""
         self.lbl_details.setText(f"<b>Details for: {name}</b>")
         for i, log in enumerate(logs):
             self.log_table.insertRow(i)
@@ -220,6 +206,13 @@ class WorkoutHistoryView(BaseView):
             self.log_table.setItem(i, 2, QTableWidgetItem(str(log['reps'])))
             self.log_table.setItem(i, 3, QTableWidgetItem(f"{log['weight_lbs']} lbs"))
             self.log_table.setItem(i, 4, QTableWidgetItem(str(log['rpe'])))
+            self.log_table.setItem(i, 5, QTableWidgetItem(log.get('notes', '')))
+
+            if log.get('is_warmup'):
+                for col in range(6):
+                    item = self.log_table.item(i, col)
+                    item.setForeground(QColor("#888888"))
+                    item.setBackground(QColor("#222222"))
 
     def _add_manual_workout(self):
         dialog = ManualWorkoutEntryDialog(self.current_user_id, self)

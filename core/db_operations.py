@@ -1,6 +1,6 @@
 import csv
 from typing import List, Dict
-from sqlalchemy import func
+from sqlalchemy import func, case
 from datetime import datetime
 
 from core.database import get_db_session
@@ -41,12 +41,14 @@ class WorkoutDatabaseManager:
     @staticmethod
     def update_routine_targets(template_id: int, adjustments: dict):
         with get_db_session() as session:
-            for ex_name, data in adjustments.items():
-                record = session.query(RoutineExercise).filter_by(template_id=template_id, exercise_name=ex_name).first()
+            for old_ex_name, data in adjustments.items():
+                record = session.query(RoutineExercise).filter_by(template_id=template_id, exercise_name=old_ex_name).first()
                 if record:
                     record.target_weight = data['weight']
                     record.target_reps_min = data['min_reps']
                     record.target_reps_max = data['max_reps']
+                    if 'new_name' in data and data['new_name'] != old_ex_name:
+                        record.exercise_name = data['new_name']
 
     @staticmethod
     def add_equipment(user_id: int, name: str, weight: float, qty: int, is_barbell: bool):
@@ -58,14 +60,17 @@ class WorkoutDatabaseManager:
     def get_equipment_inventory(user_id: int) -> dict:
         with get_db_session() as session:
             items = session.query(Equipment).filter_by(user_id=user_id).all()
-            inventory = {'barbell': 45.0, 'plates': [], 'raw_items': []}
+            inventory = {'barbell': 45.0, 'plates': [], 'paired_plates': [], 'raw_items': []}
             for item in items:
                 inventory['raw_items'].append({'name': item.name, 'weight_lbs': item.weight_lbs, 'quantity': item.quantity, 'is_barbell': item.is_barbell})
                 if item.is_barbell:
                     inventory['barbell'] = item.weight_lbs
                 else:
                     inventory['plates'].extend([item.weight_lbs] * item.quantity)
+                    inventory['paired_plates'].extend([item.weight_lbs] * (item.quantity // 2))
+
             inventory['plates'].sort(reverse=True)
+            inventory['paired_plates'].sort(reverse=True)
             return inventory
 
     @staticmethod
@@ -74,7 +79,7 @@ class WorkoutDatabaseManager:
             dt = date_str if date_str else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             workout = Workout(user_id=user_id, name=workout_name, duration_minutes=duration_minutes, bodyweight_at_time=bodyweight, date=dt)
             session.add(workout)
-            session.flush() # Get the new ID
+            session.flush()
 
             for log in logs:
                 ex = session.query(Exercise).filter_by(name=log['exercise']).first()
@@ -82,7 +87,8 @@ class WorkoutDatabaseManager:
                 set_num = 0 if log.get('is_warmup', False) else log['set']
                 session.add(WorkoutLog(
                     workout_id=workout.id, exercise_id=ex.id, set_number=set_num,
-                    reps=log['reps'], weight_lbs=log['weight'], rpe=log['rpe'], is_warmup=log.get('is_warmup', False)
+                    reps=log['reps'], weight_lbs=log['weight'], rpe=log['rpe'],
+                    is_warmup=log.get('is_warmup', False), notes=log.get('notes', '')
                 ))
             return workout.id
 
@@ -91,8 +97,14 @@ class WorkoutDatabaseManager:
         with get_db_session() as session:
             results = session.query(
                 func.strftime('%W', Workout.date).label('week'),
-                func.sum(WorkoutLog.reps * WorkoutLog.weight_lbs).label('tonnage')
+                func.sum(
+                    WorkoutLog.reps * (
+                        WorkoutLog.weight_lbs +
+                        case((Exercise.category == 'Bodyweight', Workout.bodyweight_at_time), else_=0.0)
+                    )
+                ).label('tonnage')
             ).join(WorkoutLog, Workout.id == WorkoutLog.workout_id)\
+             .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
              .filter(Workout.user_id == user_id, WorkoutLog.is_warmup == False)\
              .group_by('week').order_by('week').all()
             return {r.week: r.tonnage for r in results}
@@ -118,7 +130,7 @@ class WorkoutDatabaseManager:
     def get_all_workout_dates(user_id: int) -> list:
         with get_db_session() as session:
             workouts = session.query(Workout.date).filter_by(user_id=user_id).all()
-            return list(set([w.date.split(' ')[0] for w in workouts]))
+            return list(set([w.date.split(' ')[0] for w in workouts if w.date]))
 
     @staticmethod
     def get_tracked_exercises(user_id: int) -> list:
@@ -164,6 +176,7 @@ class WorkoutDatabaseManager:
                 'circuit_group': r.RoutineExercise.circuit_group,
                 'primary_muscle': r.Exercise.primary_muscle,
                 'secondary_muscles': r.Exercise.secondary_muscles,
+                'category': r.Exercise.category,
                 'cues': r.Exercise.cues,
                 'tracks_time': r.Exercise.tracks_time
             } for r in results]
@@ -268,12 +281,11 @@ class WorkoutDatabaseManager:
     @staticmethod
     def get_sandbox_program_data(program_id: int) -> list:
         with get_db_session() as session:
-            # Query the full RoutineExercise object instead of just the name/sets
             results = session.query(ProgramDay.day_number, RoutineExercise)\
                 .join(RoutineTemplate, RoutineTemplate.id == ProgramDay.template_id)\
                 .join(RoutineExercise, RoutineExercise.template_id == RoutineTemplate.id)\
                 .filter(ProgramDay.program_id == program_id)\
-                .order_by(ProgramDay.day_number.asc(), RoutineExercise.id.asc()).all()  # <-- Preserves order!
+                .order_by(ProgramDay.day_number.asc(), RoutineExercise.id.asc()).all()
 
             return [{
                 'day': f"Day {r.day_number}",
@@ -301,7 +313,7 @@ class WorkoutDatabaseManager:
                 .filter(WorkoutLog.workout_id == workout_id).order_by(WorkoutLog.id.asc()).all()
             return [{'id': r.WorkoutLog.id, 'exercise': r.name, 'set_number': r.WorkoutLog.set_number,
                      'reps': r.WorkoutLog.reps, 'weight_lbs': r.WorkoutLog.weight_lbs, 'rpe': r.WorkoutLog.rpe,
-                     'is_warmup': r.WorkoutLog.is_warmup} for r in results]
+                     'is_warmup': r.WorkoutLog.is_warmup, 'notes': r.WorkoutLog.notes} for r in results]
 
     @staticmethod
     def delete_workout(workout_id: int):
@@ -371,7 +383,6 @@ class WorkoutDatabaseManager:
 
     @staticmethod
     def get_user_equipment(user_id: int) -> list:
-        """Returns all equipment raw objects with IDs for the UI table."""
         with get_db_session() as session:
             items = session.query(Equipment).filter_by(user_id=user_id).order_by(Equipment.weight_lbs.desc()).all()
             return [{'id': e.id, 'name': e.name, 'weight_lbs': e.weight_lbs, 'quantity': e.quantity, 'is_barbell': e.is_barbell} for e in items]
@@ -404,21 +415,17 @@ class WorkoutDatabaseManager:
     @staticmethod
     def delete_user(user_id: int):
         with get_db_session() as session:
-            # 1. Gracefully delete Workouts (so ORM cascades to WorkoutLogs)
             workouts = session.query(Workout).filter_by(user_id=user_id).all()
             for w in workouts:
                 session.delete(w)
 
-            # 2. Gracefully delete Programs (so ORM cascades to ProgramDays)
             programs = session.query(Program).filter_by(user_id=user_id).all()
             for p in programs:
                 session.delete(p)
 
-            # 3. Delete non-cascading isolated tables
             session.query(BodyweightLog).filter_by(user_id=user_id).delete()
             session.query(Equipment).filter_by(user_id=user_id).delete()
 
-            # 4. Finally, delete the User
             user = session.query(User).filter_by(id=user_id).first()
             if user:
                 session.delete(user)
@@ -432,7 +439,6 @@ class WorkoutDatabaseManager:
     @staticmethod
     def export_workouts_to_csv(user_id: int, file_path: str):
         with get_db_session() as session:
-            # Join the tables to flatten the relational data
             results = session.query(Workout, WorkoutLog, Exercise)\
                 .join(WorkoutLog, Workout.id == WorkoutLog.workout_id)\
                 .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
@@ -441,13 +447,10 @@ class WorkoutDatabaseManager:
 
             with open(file_path, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                # Write the Headers
                 writer.writerow([
                     "Date", "Workout Name", "Duration (min)", "Bodyweight (lbs)",
                     "Exercise", "Set", "Reps", "Weight (lbs)", "RPE", "Is Warmup"
                 ])
-
-                # Write Rows
                 for w, log, ex in results:
                     writer.writerow([
                         w.date, w.name, w.duration_minutes, w.bodyweight_at_time,
@@ -456,14 +459,18 @@ class WorkoutDatabaseManager:
 
     @staticmethod
     def get_daily_tonnage(user_id: int) -> dict:
-        """Returns a dict of { 'YYYY-MM-DD': total_tonnage } for ACWR calculation."""
-        from sqlalchemy import func
+        from sqlalchemy import func, case
         with get_db_session() as session:
             results = session.query(
                 func.date(Workout.date).label('date_val'),
-                func.sum(WorkoutLog.reps * WorkoutLog.weight_lbs).label('tonnage')
+                func.sum(
+                    WorkoutLog.reps * (
+                        WorkoutLog.weight_lbs +
+                        case((Exercise.category == 'Bodyweight', Workout.bodyweight_at_time), else_=0.0)
+                    )
+                ).label('tonnage')
             ).join(WorkoutLog, Workout.id == WorkoutLog.workout_id)\
+             .join(Exercise, Exercise.id == WorkoutLog.exercise_id)\
              .filter(Workout.user_id == user_id, WorkoutLog.is_warmup == False)\
              .group_by('date_val').order_by('date_val').all()
             return {r.date_val: r.tonnage for r in results}
-

@@ -38,6 +38,13 @@ def initialize_database():
     from core.models import Base, User
     Base.metadata.create_all(bind=engine)
 
+    # SQLite ALTER TABLE hack for seamless upgrading
+    with engine.connect() as conn:
+        try: conn.execute(text("ALTER TABLE workout_logs ADD COLUMN notes VARCHAR"))
+        except Exception: pass
+        try: conn.execute(text("ALTER TABLE bodyweight_log ADD COLUMN notes VARCHAR"))
+        except Exception: pass
+
     with get_db_session() as session:
         if not session.query(User).filter_by(id=1).first():
             session.add(User(id=1, username="Default User"))

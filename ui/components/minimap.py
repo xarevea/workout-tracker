@@ -1,40 +1,85 @@
-# ui/components/minimap.py
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea
 from PyQt6.QtCore import Qt
 
 class WorkoutMinimap(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
-        self.layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.nodes = []
+        self.layout.setContentsMargins(0, 0, 0, 0)
 
-    def load_workout(self, exercises: list[str]):
-        """Clears old nodes and loads the new exercise list."""
-        # 1. DESTROY OLD WIDGETS (Fixes the duplication bug)
-        for i in reversed(range(self.layout.count())):
-            item = self.layout.itemAt(i)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        self.container = QWidget()
+        self.container.setStyleSheet("background: transparent;")
+        self.inner_layout = QVBoxLayout(self.container)
+        self.inner_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self.scroll_area.setWidget(self.container)
+        self.layout.addWidget(self.scroll_area)
+
+    def update_map(self, controller):
+        # 1. Clear old widgets
+        for i in reversed(range(self.inner_layout.count())):
+            item = self.inner_layout.itemAt(i)
             if item.widget():
                 item.widget().setParent(None)
-        
-        self.nodes.clear()
 
-        # 2. POPULATE NEW WIDGETS
-        for i, ex in enumerate(exercises):
-            lbl = QLabel(f"{i+1}. {ex}")
-            lbl.setStyleSheet("color: gray; padding: 5px; font-size: 14px;")
-            self.layout.addWidget(lbl)
-            self.nodes.append(lbl)
+        if not controller.exercises: return
 
-    def set_active_node(self, index: int):
-        """Highlights the current exercise and strikes through completed ones."""
-        for i, node in enumerate(self.nodes):
-            if i == index:
-                # Active
-                node.setStyleSheet("color: #4CAF50; font-weight: bold; padding: 5px; background-color: #2d2d2d; border-radius: 5px; font-size: 14px;")
-            elif i < index:
-                # Completed
-                node.setStyleSheet("color: #888888; text-decoration: line-through; padding: 5px; font-size: 14px;")
+        # 2. Get active statuses
+        active_task = controller.get_current_task()
+        active_ex_name = active_task['exercise']['name'] if active_task else None
+
+        # Group data for display
+        logs_by_ex = {}
+        for log in controller.session_logs:
+            logs_by_ex.setdefault(log['exercise'], []).append(log)
+
+        queue_by_ex = {}
+        for i, q in enumerate(controller.queue):
+            if i >= controller.queue_index: # Only look at upcoming
+                queue_by_ex.setdefault(q['exercise']['name'], []).append((i, q))
+
+        # 3. Draw the tree
+        for i, ex in enumerate(controller.exercises):
+            ex_name = ex['name']
+            is_active = (ex_name == active_ex_name)
+            is_completed = (ex_name not in queue_by_ex) and not is_active
+
+            # MAIN HEADER
+            lbl = QLabel(f"{i+1}. {ex_name}")
+            if is_active:
+                lbl.setStyleSheet("color: #4CAF50; font-weight: bold; padding: 5px; background-color: #2d2d2d; border-radius: 5px; font-size: 14px;")
+            elif is_completed:
+                lbl.setStyleSheet("color: #888888; text-decoration: line-through; padding: 5px; font-size: 14px;")
             else:
-                # Upcoming
-                node.setStyleSheet("color: white; padding: 5px; font-size: 14px;")
+                lbl.setStyleSheet("color: white; padding: 5px; font-size: 14px;")
+
+            self.inner_layout.addWidget(lbl)
+
+            # SUB-ITEMS FOR ACTIVE EXERCISE
+            if is_active:
+                # 1. Completed Sets
+                for log in logs_by_ex.get(ex_name, []):
+                    prefix = "Warm-up" if log.get('is_warmup') else f"Set {log['set']}"
+                    t = "s" if ex.get('tracks_time') else " reps"
+                    txt = f"   ✓ {prefix}: {log['reps']}{t} @ {log['weight']} lbs"
+
+                    sub_lbl = QLabel(txt)
+                    sub_lbl.setStyleSheet("color: #888888; text-decoration: line-through; font-size: 12px;")
+                    self.inner_layout.addWidget(sub_lbl)
+
+                # 2. Queued / Upcoming Sets
+                for q_i, q_task in queue_by_ex.get(ex_name, []):
+                    prefix = "Warm-up" if q_task.get('is_warmup') else f"Set {q_task['set_number']}"
+                    t = "s" if q_task['exercise'].get('tracks_time') else " reps"
+                    txt = f"   • {prefix}: {q_task['target_reps']}{t} @ {q_task['target_weight']} lbs"
+
+                    sub_lbl = QLabel(txt)
+                    if q_i == controller.queue_index:
+                        sub_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 12px;") # Highlight current
+                    else:
+                        sub_lbl.setStyleSheet("color: #b0b0b0; font-size: 12px;")
+                    self.inner_layout.addWidget(sub_lbl)

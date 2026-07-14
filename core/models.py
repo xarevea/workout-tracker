@@ -64,6 +64,7 @@ class WorkoutLog(Base):
     rpe = Column(Float)
     target_hit = Column(Boolean, default=False)
     is_warmup = Column(Boolean, default=False)
+    notes = Column(String)
     workout = relationship("Workout", back_populates="logs")
     exercise = relationship("Exercise")
 

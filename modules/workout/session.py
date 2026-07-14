@@ -1,7 +1,6 @@
-# modules/workout/session.py
 import time
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict
 from PyQt6.QtCore import QRunnable, QThreadPool, pyqtSlot
 
 from core.db_operations import WorkoutDatabaseManager
@@ -19,15 +18,11 @@ class FitbitSyncWorker(QRunnable):
     @pyqtSlot()
     def run(self):
         try:
-            # Silently exit if Fitbit is not actually hooked up
-            # Uncomment authentication check when API is ready
             if not self.client.authenticate(): return
-
             metrics = self.client.get_workout_metrics(self.duration, time.time())
             if metrics:
                 event_bus.FITBIT_SYNC_SUCCESS.emit({'id': self.workout_id, 'metrics': metrics})
         except Exception as e:
-            # Handle gracefully without disrupting app
             print(f"Fitbit Sync Skipped: API not configured ({str(e)})")
             pass
 
@@ -58,21 +53,24 @@ class WorkoutSessionController:
     def undo_last_set(self) -> bool:
         if not self.session_logs: return False
 
-        last_log = self.session_logs.pop()
-        if not last_log.get('is_warmup', False):
-            self.queue_index = max(0, self.queue_index - 1)
+        # Pull the log
+        self.session_logs.pop()
 
+        # Step back the queue
+        self.queue_index = max(0, self.queue_index - 1)
         return True
+
+    def skip_current_set(self):
+        if self.queue_index < len(self.queue):
+            self.queue_index += 1
 
     def load_template(self, template_id: int):
         self.exercises = WorkoutDatabaseManager.get_routine_exercises(template_id)
         self.workout_id = template_id
 
-        # Build the Unrolled Queue
         self.queue = []
         groups = defaultdict(list)
 
-        # Group exercises (Standard goes in their own unique group, Circuits share groups)
         for i, ex in enumerate(self.exercises):
             mode = ex.get('mode', 'Standard')
             if mode == ExerciseMode.STANDARD:
@@ -91,24 +89,51 @@ class WorkoutSessionController:
                             self.queue.append({
                                 'exercise': ex,
                                 'set_number': set_idx,
-                                'is_emom': mode == ExerciseMode.EMOM
+                                'is_emom': mode == ExerciseMode.EMOM,
+                                'is_warmup': False,
+                                'target_weight': ex['target_weight'],
+                                'target_reps': ex['target_reps_max']
                             })
             else:
-                # Sequential sets
                 for ex in group_exs:
                     for set_idx in range(1, ex['target_sets'] + 1):
-                        self.queue.append({'exercise': ex, 'set_number': set_idx, 'is_emom': False})
+                        self.queue.append({
+                            'exercise': ex,
+                            'set_number': set_idx,
+                            'is_emom': False,
+                            'is_warmup': False,
+                            'target_weight': ex['target_weight'],
+                            'target_reps': ex['target_reps_max']
+                        })
 
         self.queue_index = 0
         self.session_logs = []
         self.is_active = False
+
+    def insert_warmups(self, warmups_list):
+        """Injects generated warmups directly into the queue so they can be tracked properly."""
+        task = self.get_current_task()
+        if not task: return
+        ex = task['exercise']
+
+        new_tasks = []
+        for i, w in enumerate(warmups_list):
+            new_tasks.append({
+                'exercise': ex,
+                'set_number': f"W{i+1}",
+                'is_emom': False,
+                'is_warmup': True,
+                'target_weight': w['weight'],
+                'target_reps': w['reps']
+            })
+
+        self.queue = self.queue[:self.queue_index] + new_tasks + self.queue[self.queue_index:]
 
     def toggle_workout_state(self):
         if self.start_time is None or self.start_time == 0: self.start_time = time.time()
         self.is_active = not self.is_active
 
     def get_current_task(self) -> Dict:
-        """Returns the current queue item containing the exercise and set number."""
         if self.queue_index < len(self.queue):
             return self.queue[self.queue_index]
         return {}
@@ -117,7 +142,7 @@ class WorkoutSessionController:
         task = self.get_current_task()
         return task.get('exercise', {})
 
-    def log_set(self, reps: int, weight: float, rpe: float, is_warmup: bool = False):
+    def log_set(self, reps: int, weight: float, rpe: float, is_warmup: bool = False, notes: str = ""):
         task = self.get_current_task()
         exercise = task['exercise']
 
@@ -129,7 +154,8 @@ class WorkoutSessionController:
             "rpe": rpe,
             "timestamp": time.time(),
             "is_warmup": is_warmup,
-            "target_hit": reps >= exercise['target_reps_min'] if not is_warmup else True
+            "target_hit": reps >= exercise['target_reps_min'] if not is_warmup else True,
+            "notes": notes
         }
         self.session_logs.append(log_entry)
 
@@ -138,10 +164,9 @@ class WorkoutSessionController:
                 new_target = round((weight * 0.9) / 2.5) * 2.5
                 exercise['target_weight'] = new_target
 
-            self.queue_index += 1
+        self.queue_index += 1
 
     def finish_workout(self) -> dict:
-        if not self.session_logs: return None
         self.is_active = False
         duration_minutes = int((time.time() - self.start_time) / 60.0) if self.start_time else 0
         return {"duration_minutes": duration_minutes, "logs": self.session_logs}
