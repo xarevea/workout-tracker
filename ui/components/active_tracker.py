@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QSpinBox, QDoubleSpinBox, QSlider,
     QGroupBox, QScrollArea, QComboBox, QCheckBox,
-    QListWidget, QListWidgetItem
+    QListWidget, QListWidgetItem, QDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, QThreadPool, QRectF
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont
@@ -28,6 +28,7 @@ class SetState(Enum):
     IDLE = auto()
     BUFFER = auto()
     ACTIVE = auto()
+    OVERTIME = auto()
 
 class MiniRestTimer(QWidget):
     def __init__(self, parent=None):
@@ -73,6 +74,112 @@ class MiniRestTimer(QWidget):
         self.move(self.x() + delta.x(), self.y() + delta.y())
         self.oldPos = event.globalPosition().toPoint()
 
+class MiniWorkoutWidget(QWidget):
+    def __init__(self, main_tracker, parent=None):
+        super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.main_tracker = main_tracker
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        self.setFixedSize(240, 135)
+
+        self.frame = QWidget(self)
+        self.frame.setGeometry(0, 0, 240, 135)
+        self.frame.setStyleSheet("background-color: rgba(30, 30, 30, 230); border-radius: 10px; border: 1px solid #555; color: white;")
+
+        layout = QVBoxLayout(self.frame)
+        layout.setContentsMargins(10, 5, 10, 10)
+
+        # Close button row
+        top_row = QHBoxLayout()
+        top_row.addStretch()
+        self.btn_close = QPushButton("×")
+        self.btn_close.setFixedSize(20, 20)
+        self.btn_close.setStyleSheet("background: transparent; color: #888; border: none; font-weight: bold; font-size: 16px;")
+        self.btn_close.clicked.connect(self._close_overlay)
+        top_row.addWidget(self.btn_close)
+        layout.addLayout(top_row)
+
+        self.lbl_status = QLabel("Idle")
+        self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_status.setStyleSheet("font-weight: bold; font-size: 14px; background: transparent; border: none;")
+
+        self.lbl_timer = QLabel("00:00")
+        self.lbl_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_timer.setStyleSheet("color: #4CAF50; font-size: 20px; font-weight: bold; background: transparent; border: none;")
+
+        self.btn_action = QPushButton("Action")
+        self.btn_action.setMinimumHeight(35) # PREVENT SQUISHING
+        self.btn_action.setStyleSheet("background-color: #2196F3; font-weight: bold; border-radius: 5px; padding: 5px;")
+        self.btn_action.clicked.connect(self._on_action)
+
+        layout.addWidget(self.lbl_status)
+        layout.addWidget(self.lbl_timer)
+        layout.addWidget(self.btn_action)
+
+        self.oldPos = self.pos()
+        self.is_resting = False
+
+    def _close_overlay(self):
+        self.main_tracker.chk_mini_timer.setChecked(False)
+        self.hide()
+
+    def set_display(self, status, time_str, is_resting):
+        self.lbl_status.setText(status)
+        self.lbl_timer.setText(time_str)
+        self.is_resting = is_resting
+        if is_resting:
+            self.lbl_timer.setStyleSheet("color: #FF9800; font-size: 20px; font-weight: bold; background: transparent; border: none;")
+            self.btn_action.setText("Skip Rest")
+            self.btn_action.setStyleSheet("background-color: #FF9800; font-weight: bold; border-radius: 5px; padding: 5px;")
+        else:
+            self.lbl_timer.setStyleSheet("color: #4CAF50; font-size: 20px; font-weight: bold; background: transparent; border: none;")
+            self.btn_action.setText("Log Set")
+            self.btn_action.setStyleSheet("background-color: #2196F3; font-weight: bold; border-radius: 5px; padding: 5px;")
+
+    def _on_action(self):
+        if self.is_resting:
+            self.main_tracker._skip_rest()
+        else:
+            task = self.main_tracker.controller.get_current_task()
+            if not task: return
+
+            dialog = QDialog(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+            dialog.setStyleSheet("background-color: #2d2d2d; border: 1px solid #777; border-radius: 8px; color: white; padding: 10px;")
+            d_layout = QVBoxLayout(dialog)
+
+            d_layout.addWidget(QLabel(f"Log: {task['exercise']['name']}"))
+
+            row1 = QHBoxLayout()
+            spin_reps = QSpinBox(); spin_reps.setRange(0, 1000)
+            spin_reps.setValue(self.main_tracker.spin_reps.value())
+            row1.addWidget(QLabel("Reps/Secs:")); row1.addWidget(spin_reps)
+
+            row2 = QHBoxLayout()
+            spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1500)
+            spin_wt.setValue(self.main_tracker.spin_weight.value())
+            row2.addWidget(QLabel("Weight:")); row2.addWidget(spin_wt)
+
+            btn_submit = QPushButton("Submit")
+            btn_submit.setStyleSheet("background-color: #4CAF50; padding: 5px; font-weight: bold;")
+            btn_submit.clicked.connect(dialog.accept)
+
+            d_layout.addLayout(row1)
+            d_layout.addLayout(row2)
+            d_layout.addWidget(btn_submit)
+
+            if dialog.exec():
+                self.main_tracker.spin_reps.setValue(spin_reps.value())
+                self.main_tracker.spin_weight.setValue(spin_wt.value())
+                self.main_tracker._on_log_set_clicked()
+
+    def mousePressEvent(self, event):
+        self.oldPos = event.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, event):
+        delta = event.globalPosition().toPoint() - self.oldPos
+        self.move(self.x() + delta.x(), self.y() + delta.y())
+        self.oldPos = event.globalPosition().toPoint()
+
 class ActiveTrackerWidget(QWidget):
     def __init__(self, controller, minimap, global_timer_lbl=None, parent=None):
         super().__init__(parent)
@@ -93,7 +200,7 @@ class ActiveTrackerWidget(QWidget):
         self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
         self.tray.show()
 
-        self.mini_timer = MiniRestTimer()
+        self.mini_timer = MiniWorkoutWidget(self)
 
         self.tts = QTextToSpeech()
 
@@ -102,7 +209,7 @@ class ActiveTrackerWidget(QWidget):
         self._setup_timers()
 
     def announce(self, text: str):
-        if self.audio_enabled and self.tts:
+        if self.audio_enabled and self.chk_voice.isChecked() and self.tts:
             self.tts.say(text)
 
     def refresh_data(self):
@@ -186,10 +293,24 @@ class ActiveTrackerWidget(QWidget):
         self.btn_play_pause.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         self.btn_play_pause.clicked.connect(self._toggle_timer)
 
+        # MOVED CHECKBOXES TO THE TOP UNIVERSAL BAR
+        self.chk_mini_timer = QCheckBox("Mini Overlay")
+        self.chk_mini_timer.setStyleSheet("color: #b0b0b0;")
+        self.chk_mini_timer.toggled.connect(lambda checked: self.mini_timer.hide() if not checked else self.mini_timer.show())
+
+        self.chk_voice = QCheckBox("Voice Prompts")
+        self.chk_voice.setStyleSheet("color: #b0b0b0;")
+        self.chk_voice.setChecked(True)
+
+        checkboxes_layout = QVBoxLayout()
+        checkboxes_layout.addWidget(self.chk_mini_timer)
+        checkboxes_layout.addWidget(self.chk_voice)
+
         timer_layout.addWidget(self.btn_play_pause)
         timer_layout.addStretch()
         timer_layout.addWidget(self.lbl_timer)
         timer_layout.addStretch()
+        timer_layout.addLayout(checkboxes_layout)
         layout.addLayout(timer_layout)
 
         self.rest_layout = QHBoxLayout()
@@ -200,12 +321,8 @@ class ActiveTrackerWidget(QWidget):
         self.btn_skip_rest = QPushButton("Skip Rest")
         self.btn_add_time.clicked.connect(lambda: self._add_rest_time(30))
         self.btn_skip_rest.clicked.connect(self._skip_rest)
-        self.chk_mini_timer = QCheckBox("Show Mini Overlay")
-        self.chk_mini_timer.setStyleSheet("color: #b0b0b0;")
-        self.chk_mini_timer.toggled.connect(lambda checked: self.mini_timer.hide() if not checked else None)
 
         self.rest_layout.addStretch()
-        self.rest_layout.addWidget(self.chk_mini_timer)
         self.rest_layout.addWidget(self.lbl_rest)
         self.rest_layout.addWidget(self.btn_add_time)
         self.rest_layout.addWidget(self.btn_skip_rest)
@@ -366,7 +483,8 @@ class ActiveTrackerWidget(QWidget):
         if self.controller.is_active:
             self.btn_play_pause.setText("Pause Workout")
             self.btn_play_pause.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
-            self.btn_log.setEnabled(True)
+            if self.rest_seconds == 0:
+                self.btn_log.setEnabled(True)
             self._update_display()
         else:
             self.btn_play_pause.setText("Resume Workout")
@@ -377,7 +495,8 @@ class ActiveTrackerWidget(QWidget):
         if not self.controller.is_active:
             return
 
-        if self.active_set_state == "BUFFER":
+        # OVERHAULED TIMED EXERCISE STATE LOGIC
+        if self.active_set_state == SetState.BUFFER:
             self.buffer_remaining -= 1
             self.lbl_timed_status.setText(f"Get Ready: {self.buffer_remaining}s")
             self.lbl_timed_status.setStyleSheet("color: #FF9800; font-weight: bold;")
@@ -385,8 +504,9 @@ class ActiveTrackerWidget(QWidget):
                 self._play_sound("tick")
             elif self.buffer_remaining <= 0:
                 self._play_sound("bell")
-                self.active_set_state = "ACTIVE"
-        elif self.active_set_state == "ACTIVE":
+                self.active_set_state = SetState.ACTIVE
+
+        elif self.active_set_state == SetState.ACTIVE:
             self.set_time_remaining -= 1
             self.lbl_timed_status.setText(f"HOLD! {self.set_time_remaining}s left")
             self.lbl_timed_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
@@ -394,11 +514,19 @@ class ActiveTrackerWidget(QWidget):
                 self._play_sound("tick")
             elif self.set_time_remaining <= 0:
                 self._play_sound("bell")
-                self.lbl_timed_status.setText("Time's Up! Log your time.")
+                self.announce("Target time reached.")
+                self.lbl_timed_status.setText("Target Reached! Overtime: +0s")
                 self.lbl_timed_status.setStyleSheet("color: #2196F3; font-weight: bold;")
-                self.active_set_state = "IDLE"
-                self.btn_start_timed.setText("▶ Restart Timer")
-                self.btn_start_timed.setStyleSheet("background-color: #9C27B0; color: white; font-weight: bold;")
+
+                # MOVES TO NEW OVERTIME STATE
+                self.active_set_state = SetState.OVERTIME
+                self.overtime_seconds = 0
+                self.btn_start_timed.setText("⏹ Stop Timer")
+
+        elif self.active_set_state == SetState.OVERTIME:
+            self.overtime_seconds += 1
+            self.lbl_timed_status.setText(f"Target Reached! Overtime: +{self.overtime_seconds}s")
+            self.lbl_timed_status.setStyleSheet("color: #2196F3; font-weight: bold;")
 
         if self.controller.start_time:
             total_secs = int(time.time() - self.controller.start_time)
@@ -412,45 +540,40 @@ class ActiveTrackerWidget(QWidget):
             mins, secs = divmod(self.rest_seconds, 60)
             time_str = f"Resting: {mins:02d}:{secs:02d}"
 
-            # --- PROGRESS PERCENTAGE CALCULATION ---
-            current_ex = self.controller.get_current_exercise()
-            total_rest_target = current_ex.get('rest_seconds', 90) if current_ex else 90
-            pct = self.rest_seconds / total_rest_target if total_rest_target > 0 else 0.0
-
             if self.chk_mini_timer.isChecked():
                 if not self.mini_timer.isVisible(): self.mini_timer.show()
-                self.mini_timer.set_time(f"{mins:02d}:{secs:02d}", pct)
+                self.mini_timer.set_display("Resting", time_str, True)
 
             self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #FF9800;")
-
             self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
             self.global_timer_lbl.setStyleSheet("color: #FF9800; font-weight: bold; font-size: 16px;")
 
-            if self.rest_seconds == self.warning_threshold_sec:
-                self._play_sound("tick")
-            elif self.rest_seconds < self.warning_threshold_sec and self.rest_seconds > 0:
+            if self.rest_seconds <= self.warning_threshold_sec and self.rest_seconds > 0:
                 self._play_sound("tick")
             elif self.rest_seconds == 0:
                 self._play_sound("bell")
-                self.tray.showMessage("Rest Complete!", "Time for your next set.", QSystemTrayIcon.MessageIcon.Information, 3000)
                 self._skip_rest()
-
                 next_task = self.controller.get_current_task()
                 if next_task:
                     ex_name = next_task['exercise']['name']
                     self.announce(f"Time is up. Next exercise: {ex_name}")
         else:
-            self.mini_timer.hide()
             self.workout_seconds += 1
             mins, secs = divmod(self.workout_seconds, 60)
             time_str = f"Set Time: {mins:02d}:{secs:02d}"
 
-            # Update Local Timer
+            if self.chk_mini_timer.isChecked():
+                if not self.mini_timer.isVisible(): self.mini_timer.show()
+                task = self.controller.get_current_task()
+                if task:
+                    self.mini_timer.set_display(f"{task['exercise']['name']} (Set {task['set_number']})", time_str, False)
+                else:
+                    self.mini_timer.set_display("Workout Complete", "00:00", False)
+                    self.mini_timer.btn_action.setEnabled(False)
+
             self.lbl_timer.setText(time_str)
             self.lbl_timer.setStyleSheet("color: #4CAF50;")
-
-            # Update Global Header
             self.global_timer_lbl.setText(f"{time_str}  |  {global_str}")
             self.global_timer_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 16px;")
 
@@ -460,7 +583,7 @@ class ActiveTrackerWidget(QWidget):
         self.rest_seconds = 0
         self.workout_seconds = 0
         self.rest_container.hide()
-        self.log_group.setEnabled(True)
+        self.btn_log.setEnabled(True)
         self.lbl_timer.setText("00:00")
         self.lbl_timer.setStyleSheet("color: #4CAF50;")
 
@@ -568,6 +691,7 @@ class ActiveTrackerWidget(QWidget):
         self._update_display()
 
     def _on_log_set_clicked(self):
+        self.btn_log.setEnabled(False)
         self._reset_timed_set()
         self.controller.log_set(
             reps=self.spin_reps.value(),
@@ -577,22 +701,21 @@ class ActiveTrackerWidget(QWidget):
         )
         self.slider_rpe.setValue(7)
 
-        if self.controller.current_exercise_index >= len(self.controller.exercises):
+        if not self.controller.get_current_task():
             self._trigger_workout_review()
         else:
             self._update_display()
             rest_needed = self.controller.get_current_exercise().get('rest_seconds', 90)
 
-            # If the exercise has 0 rest, skip the rest UI immediately to reset the set timer
             if rest_needed > 0:
                 self.rest_seconds = rest_needed
                 self.rest_container.show()
-                self.log_group.setEnabled(False)
             else:
                 self._skip_rest()
 
     def _trigger_workout_review(self):
         self.timer.stop()
+        self.btn_undo.setEnabled(False)
         workout_data = self.controller.finish_workout()
         if not workout_data: return
 
@@ -646,12 +769,14 @@ class ActiveTrackerWidget(QWidget):
             if not self.controller.is_active and self.btn_play_pause.text() == "Pause Workout":
                 self.controller.is_active = True
                 self.timer.start(1000)
-            if hasattr(self, 'btn_log'):
-                self.btn_log.setEnabled(True)
 
-            self.workout_seconds = 0  # <--- Reset the set timer so you can re-attempt cleanly
+            self.btn_log.setEnabled(True)
+
+            self.workout_seconds = 0
+            self.rest_seconds = 0
+            self.lbl_timer.setText("00:00")
+            self.lbl_timer.setStyleSheet("color: #4CAF50;")
             self.rest_container.hide()
-            self.log_group.setEnabled(True)
             self._update_display()
 
     def _set_static_mode(self, is_static: bool):
@@ -662,16 +787,16 @@ class ActiveTrackerWidget(QWidget):
             self.spin_reps.setSuffix(" reps")
 
     def _reset_timed_set(self):
-        self.active_set_state = "IDLE"
+        self.active_set_state = SetState.IDLE
         self.btn_start_timed.setText("▶ Start Set Timer")
         self.btn_start_timed.setStyleSheet("background-color: #9C27B0; color: white; font-weight: bold;")
         self.lbl_timed_status.setText("")
 
     def _toggle_timed_set(self):
-        if self.active_set_state != "IDLE":
+        if self.active_set_state != SetState.IDLE:
             self._reset_timed_set()
         else:
-            self.active_set_state = "BUFFER"
+            self.active_set_state = SetState.BUFFER
             self.buffer_remaining = self.spin_buffer.value()
             self.set_time_remaining = self.spin_reps.value()
             self.btn_start_timed.setText("⏹ Cancel Timer")

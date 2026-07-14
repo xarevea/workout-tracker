@@ -16,10 +16,10 @@ def main():
     parser = argparse.ArgumentParser(description="Hybrid Tracker App")
     parser.add_argument('--test', action='store_true', help="Seed the database with mock historical data")
     args = parser.parse_args()
-    
+
     if args.test:
         test_db_path = os.path.abspath('test_tracker.db')
-        
+
         def cleanup_test_db():
             import gc
             gc.collect() # Force close dangling SQLite handles
@@ -29,10 +29,10 @@ def main():
                     print("Test database cleaned up.")
                 except Exception as e:
                     pass
-                    
+
         cleanup_test_db() # Clear leftover test DB before start
-        
-        core.database.DB_PATH = test_db_path  # Override the DB path before initialization
+
+        core.database.set_database_path(test_db_path)
         atexit.register(cleanup_test_db)
         print(f"Running in TEST mode. Isolated DB: {test_db_path}")
 
@@ -47,9 +47,9 @@ def main():
     # 3. Boot UI
     app = QApplication(sys.argv)
     qdarktheme.setup_theme(
-        theme="dark",          
-        corner_shape="sharp",  
-        custom_colors={"primary": "#4CAF50"}  
+        theme="dark",
+        corner_shape="sharp",
+        custom_colors={"primary": "#4CAF50"}
     )
 
     window = MainWindow()

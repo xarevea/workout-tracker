@@ -64,7 +64,7 @@ class WorkoutDatabaseManager:
                 if item.is_barbell:
                     inventory['barbell'] = item.weight_lbs
                 else:
-                    inventory['plates'].extend([item.weight_lbs] * (item.quantity // 2))
+                    inventory['plates'].extend([item.weight_lbs] * item.quantity)
             inventory['plates'].sort(reverse=True)
             return inventory
 
@@ -268,11 +268,24 @@ class WorkoutDatabaseManager:
     @staticmethod
     def get_sandbox_program_data(program_id: int) -> list:
         with get_db_session() as session:
-            results = session.query(ProgramDay.day_number, RoutineExercise.exercise_name, RoutineExercise.target_sets)\
+            # Query the full RoutineExercise object instead of just the name/sets
+            results = session.query(ProgramDay.day_number, RoutineExercise)\
                 .join(RoutineTemplate, RoutineTemplate.id == ProgramDay.template_id)\
                 .join(RoutineExercise, RoutineExercise.template_id == RoutineTemplate.id)\
-                .filter(ProgramDay.program_id == program_id).order_by(ProgramDay.day_number.asc()).all()
-            return [{'day': f"Day {r.day_number}", 'exercise': r.exercise_name, 'sets': r.target_sets} for r in results]
+                .filter(ProgramDay.program_id == program_id)\
+                .order_by(ProgramDay.day_number.asc(), RoutineExercise.id.asc()).all()  # <-- Preserves order!
+
+            return [{
+                'day': f"Day {r.day_number}",
+                'exercise': r.RoutineExercise.exercise_name,
+                'sets': r.RoutineExercise.target_sets,
+                'min_reps': r.RoutineExercise.target_reps_min,
+                'max_reps': r.RoutineExercise.target_reps_max,
+                'weight': r.RoutineExercise.target_weight,
+                'rest': r.RoutineExercise.rest_seconds,
+                'mode': r.RoutineExercise.mode or ExerciseMode.STANDARD,
+                'circuit_group': r.RoutineExercise.circuit_group
+            } for r in results]
 
     @staticmethod
     def get_workout_history(user_id: int) -> list:
@@ -293,7 +306,9 @@ class WorkoutDatabaseManager:
     @staticmethod
     def delete_workout(workout_id: int):
         with get_db_session() as session:
-            session.query(Workout).filter_by(id=workout_id).delete() # Cascade delete handles logs
+            obj = session.query(Workout).filter_by(id=workout_id).first()
+            if obj:
+                session.delete(obj)
 
     @staticmethod
     def get_all_users() -> list:
@@ -382,7 +397,37 @@ class WorkoutDatabaseManager:
     @staticmethod
     def delete_exercise(ex_id: int):
         with get_db_session() as session:
-            session.query(Exercise).filter_by(id=ex_id).delete()
+            obj = session.query(Exercise).filter_by(id=ex_id).first()
+            if obj:
+                session.delete(obj)
+
+    @staticmethod
+    def delete_user(user_id: int):
+        with get_db_session() as session:
+            # 1. Gracefully delete Workouts (so ORM cascades to WorkoutLogs)
+            workouts = session.query(Workout).filter_by(user_id=user_id).all()
+            for w in workouts:
+                session.delete(w)
+
+            # 2. Gracefully delete Programs (so ORM cascades to ProgramDays)
+            programs = session.query(Program).filter_by(user_id=user_id).all()
+            for p in programs:
+                session.delete(p)
+
+            # 3. Delete non-cascading isolated tables
+            session.query(BodyweightLog).filter_by(user_id=user_id).delete()
+            session.query(Equipment).filter_by(user_id=user_id).delete()
+
+            # 4. Finally, delete the User
+            user = session.query(User).filter_by(id=user_id).first()
+            if user:
+                session.delete(user)
+
+    @staticmethod
+    def delete_program(program_id: int):
+        with get_db_session() as session:
+            obj = session.query(Program).filter_by(id=program_id).first()
+            if obj: session.delete(obj)
 
     @staticmethod
     def export_workouts_to_csv(user_id: int, file_path: str):

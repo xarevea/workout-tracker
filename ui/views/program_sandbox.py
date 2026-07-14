@@ -67,7 +67,7 @@ class FinalizeProgramDialog(QDialog):
         super().__init__(parent)
         self.user_id = user_id
         self.setWindowTitle("Finalize Program Details")
-        self.resize(850, 500)
+        self.resize(950, 500)
         self.layout = QVBoxLayout(self)
 
         header_layout = QHBoxLayout()
@@ -91,26 +91,52 @@ class FinalizeProgramDialog(QDialog):
         self.layout.addLayout(header_layout)
 
         self.table = QTableWidget(len(exercises_data), 9)
-        self.table.setHorizontalHeaderLabels(["Day", "Exercise", "Mode", "Group", "Sets", "Min Reps", "Max Reps", "Weight", "Rest (s)"])
+        self.table.setHorizontalHeaderLabels(["Day", "Exercise", "Mode", "Group", "Sets", "Min Target", "Max Target", "Weight", "Rest (s)"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.layout.addWidget(self.table)
 
         for row, ex in enumerate(exercises_data):
-            day_item = QTableWidgetItem(ex['day']); day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            ex_item = QTableWidgetItem(ex['name']); ex_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            is_timed = ex.get('tracks_time', False)
+            day_item = QTableWidgetItem(ex['day'])
+            day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+
+            display_name = f"{ex['name']} ⏱️" if is_timed else ex['name']
+            ex_item = QTableWidgetItem(ex['name'])
+            ex_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
 
             combo_mode = QComboBox()
             for mode_enum in ExerciseMode:
                 combo_mode.addItem(mode_enum.value, userData=mode_enum)
 
+            current_mode = ex.get('mode', ExerciseMode.STANDARD)
+            idx = combo_mode.findData(current_mode)
+            if idx >= 0:
+                combo_mode.setCurrentIndex(idx)
+
             spin_group = QSpinBox()
             spin_group.setToolTip("Exercises with the same Group # run together in a circuit.")
 
-            spin_sets = QSpinBox(); spin_sets.setValue(3)
-            spin_min = QSpinBox(); spin_min.setValue(8)
-            spin_max = QSpinBox(); spin_max.setValue(12)
-            spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1000); spin_wt.setValue(0.0)
-            spin_rest = QSpinBox(); spin_rest.setRange(0, 600); spin_rest.setSingleStep(15); spin_rest.setValue(90)
+            spin_sets = QSpinBox()
+            spin_sets.setValue(ex.get('sets', 3))
+
+            spin_min = QSpinBox()
+            spin_min.setMaximum(9999)
+            spin_min.setSuffix(" sec" if is_timed else " rep")
+            spin_min.setValue(ex.get('min_reps', 30 if is_timed else 8))
+
+            spin_max = QSpinBox()
+            spin_max.setMaximum(9999)
+            spin_max.setSuffix(" sec" if is_timed else " rep")
+            spin_max.setValue(ex.get('max_reps', 60 if is_timed else 12))
+
+            spin_wt = QDoubleSpinBox()
+            spin_wt.setRange(0, 1000)
+            spin_wt.setValue(ex.get('weight', 0.0))
+
+            spin_rest = QSpinBox()
+            spin_rest.setRange(0, 600)
+            spin_rest.setValue(ex.get('rest', 90))
+            spin_rest.setSingleStep(15)
 
             self.table.setItem(row, 0, day_item)
             self.table.setItem(row, 1, ex_item)
@@ -133,26 +159,26 @@ class FinalizeProgramDialog(QDialog):
 
     def _snap_to_equipment(self):
         for row in range(self.table.rowCount()):
-            spin_wt = self.table.cellWidget(row, 5)
+            spin_wt = self.table.cellWidget(row, 7)
             target = spin_wt.value()
             if target > 0:
-                # Uses the user's specific inventory to find achievable weights
                 valid_weight = PlateCalculator.get_closest_valid_weight(target, self.user_id)
                 spin_wt.setValue(valid_weight)
 
     def get_final_data(self):
         final_data = []
         for row in range(self.table.rowCount()):
+            raw_ex_name = self.table.item(row, 1).text().replace(" ⏱️", "")
             final_data.append({
                 'day': self.table.item(row, 0).text(),
-                'exercise': self.table.item(row, 1).text(),
+                'exercise': raw_ex_name,
                 'mode': self.table.cellWidget(row, 2).currentData(),
                 'circuit_group': self.table.cellWidget(row, 3).value(),
                 'sets': self.table.cellWidget(row, 4).value(),
                 'min_reps': self.table.cellWidget(row, 5).value(),
                 'max_reps': self.table.cellWidget(row, 6).value(),
                 'weight': self.table.cellWidget(row, 7).value(),
-                'rest': self.table.cellWidget(row, 8).value()
+                'rest': self.table.cellWidget(row, 8).value(),
             })
         return final_data
 
@@ -310,9 +336,9 @@ class ProgramSandboxView(BaseView):
         self.txt_program_name.setText(self.combo_load_program.currentText())
         data = WorkoutDatabaseManager.get_sandbox_program_data(program_id)
 
-        # Group exercises by day
         day_map = {d: [] for d in ["Unassigned", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"]}
-        for item in data: day_map[item['day']].append(item['exercise'])
+        # FIX: Append the whole dictionary 'item', not just item['exercise']
+        for item in data: day_map[item['day']].append(item)
 
         for day, ex_list in day_map.items():
             # Add Horizontal Separator Header
@@ -325,8 +351,8 @@ class ProgramSandboxView(BaseView):
             self.schedule_list.addItem(header)
 
             for ex in ex_list:
-                item = QListWidgetItem(ex)
-                item.setData(Qt.ItemDataRole.UserRole, ex)
+                item = QListWidgetItem(ex['exercise'])       # Display the string
+                item.setData(Qt.ItemDataRole.UserRole, ex)   # Store the WHOLE dict in the background!
                 self.schedule_list.addItem(item)
 
         self._trigger_live_feedback()
@@ -345,6 +371,8 @@ class ProgramSandboxView(BaseView):
         exercises_data = []
         current_day = "Unassigned"
 
+        ex_dict_lookup = {e['name']: e.get('tracks_time', False) for e in self.all_exercises}
+
         for i in range(self.schedule_list.count()):
             item = self.schedule_list.item(i)
             is_header = item.data(Qt.ItemDataRole.UserRole + 1)
@@ -352,9 +380,31 @@ class ProgramSandboxView(BaseView):
             if is_header:
                 current_day = is_header
             else:
+                user_data = item.data(Qt.ItemDataRole.UserRole)
+
+                # FIX: If it's loaded from the DB it's a dict, if it's newly dragged from the bank it's a string
+                if isinstance(user_data, dict):
+                    ex_name = user_data['exercise']
+                    base_dict = user_data
+                else:
+                    ex_name = user_data
+                    base_dict = {}
+
+                is_timed = ex_dict_lookup.get(ex_name, False)
+
                 exercises_data.append({
-                    'name': item.data(Qt.ItemDataRole.UserRole),
-                    'day': current_day
+                    'name': ex_name,
+                    'day': current_day,
+                    'tracks_time': is_timed,
+
+                    # Pre-fill with existing values if they exist, otherwise use logical defaults
+                    'sets': base_dict.get('sets', 3),
+                    'min_reps': base_dict.get('min_reps', 30 if is_timed else 8),
+                    'max_reps': base_dict.get('max_reps', 60 if is_timed else 12),
+                    'weight': base_dict.get('weight', 0.0),
+                    'rest': base_dict.get('rest', 90),
+                    'mode': base_dict.get('mode', ExerciseMode.STANDARD),
+                    'circuit_group': base_dict.get('circuit_group', 0)
                 })
         return exercises_data
 

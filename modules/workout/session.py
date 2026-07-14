@@ -114,8 +114,8 @@ class WorkoutSessionController:
         return {}
 
     def get_current_exercise(self) -> Dict:
-        if self.current_exercise_index < len(self.exercises): return self.exercises[self.current_exercise_index]
-        return {}
+        task = self.get_current_task()
+        return task.get('exercise', {})
 
     def log_set(self, reps: int, weight: float, rpe: float, is_warmup: bool = False):
         task = self.get_current_task()
@@ -139,10 +139,6 @@ class WorkoutSessionController:
                 exercise['target_weight'] = new_target
 
             self.queue_index += 1
-
-    def _advance_exercise(self):
-        self.current_exercise_index += 1
-        self.current_set = 1
 
     def finish_workout(self) -> dict:
         if not self.session_logs: return None

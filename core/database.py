@@ -8,6 +8,13 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tracke
 engine = create_engine(f"sqlite:///{DB_PATH}")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+def set_database_path(new_path):
+    """Safely swaps the database file at runtime (used for --test)"""
+    global DB_PATH, engine, SessionLocal
+    DB_PATH = new_path
+    engine = create_engine(f"sqlite:///{DB_PATH}")
+    SessionLocal.configure(bind=engine)
+
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()

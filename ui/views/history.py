@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget, 
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
     QTableWidgetItem, QHeaderView, QPushButton, QMessageBox, QSplitter,
     QDialog, QLineEdit, QDateEdit, QSpinBox, QComboBox, QDoubleSpinBox
 )
@@ -23,10 +23,10 @@ class ManualWorkoutEntryDialog(QDialog):
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDate(QDate.currentDate())
-        
+
         self.txt_name = QLineEdit()
         self.txt_name.setPlaceholderText("Workout Name (e.g. Pull Day)")
-        
+
         self.spin_dur = QSpinBox(); self.spin_dur.setSuffix(" min"); self.spin_dur.setValue(60)
         self.spin_bw = QDoubleSpinBox(); self.spin_bw.setSuffix(" lbs"); self.spin_bw.setRange(50, 500)
         self.spin_bw.setValue(WorkoutDatabaseManager.get_latest_bodyweight(user_id))
@@ -50,7 +50,7 @@ class ManualWorkoutEntryDialog(QDialog):
         btn_save = QPushButton("Save History")
         btn_save.setStyleSheet("background-color: #4CAF50; color: white;")
         btn_save.clicked.connect(self._save)
-        
+
         controls.addWidget(btn_add_row)
         controls.addStretch()
         controls.addWidget(btn_save)
@@ -62,16 +62,18 @@ class ManualWorkoutEntryDialog(QDialog):
     def _add_row(self):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        
+
         combo_ex = QComboBox(); combo_ex.addItems(self.exercise_bank); combo_ex.setEditable(True)
         spin_set = QSpinBox(); spin_set.setValue(1)
         spin_reps = QSpinBox(); spin_reps.setValue(10)
         spin_wt = QDoubleSpinBox(); spin_wt.setRange(0, 1500)
         spin_rpe = QDoubleSpinBox(); spin_rpe.setRange(1, 10); spin_rpe.setValue(8)
-        
+
         btn_del = QPushButton("X"); btn_del.setStyleSheet("color: red;")
-        btn_del.clicked.connect(lambda: self.table.removeRow(self.table.indexAt(btn_del.pos()).row()))
-        
+        btn_del.clicked.connect(lambda checked, b=btn_del: self.table.removeRow(
+            next((i for i in range(self.table.rowCount()) if self.table.cellWidget(i, 5) == b), -1)
+        ))
+
         self.table.setCellWidget(row, 0, combo_ex)
         self.table.setCellWidget(row, 1, spin_set)
         self.table.setCellWidget(row, 2, spin_reps)
@@ -94,9 +96,9 @@ class ManualWorkoutEntryDialog(QDialog):
                 "rpe": self.table.cellWidget(i, 4).value(),
                 "is_warmup": False
             })
-            
+
         date_str = self.date_edit.date().toString("yyyy-MM-dd") + " 12:00:00"
-        
+
         # Passes date_str directly now, removing need for the raw UPDATE query hack
         WorkoutDatabaseManager.save_completed_workout(
             user_id=self.user_id,
@@ -104,24 +106,24 @@ class ManualWorkoutEntryDialog(QDialog):
             duration_minutes=self.spin_dur.value(),
             bodyweight=self.spin_bw.value(),
             logs=logs,
-            date_str=date_str 
+            date_str=date_str
         )
         self.accept()
-     
+
 
 class WorkoutHistoryView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
         event_bus.WORKOUT_COMPLETED.connect(self.refresh_data)
-        
+
         layout = QHBoxLayout(self)
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        
+
         # --- LEFT: Workout List ---
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(QLabel("<b>Past Workouts</b>"))
-        
+
         self.workout_table = QTableWidget(0, 3)
         self.workout_table.setHorizontalHeaderLabels(["Date", "Workout", "Duration"])
         self.workout_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -129,33 +131,33 @@ class WorkoutHistoryView(BaseView):
         self.workout_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.workout_table.itemSelectionChanged.connect(self._on_workout_selected)
         left_layout.addWidget(self.workout_table)
-        
+
         btn_layout = QHBoxLayout()
         btn_add_manual = QPushButton("➕ Add Past Workout")
         btn_add_manual.setStyleSheet("color: #4CAF50; font-weight: bold;")
         btn_add_manual.clicked.connect(self._add_manual_workout)
-        
+
         btn_delete_workout = QPushButton("🗑️ Delete Selected Workout")
         btn_delete_workout.setStyleSheet("color: #F44336;")
         btn_delete_workout.clicked.connect(self._delete_selected_workout)
-        
+
         btn_layout.addWidget(btn_add_manual)
         btn_layout.addWidget(btn_delete_workout)
         left_layout.addLayout(btn_layout)
-        
+
         splitter.addWidget(left_panel)
-        
+
         # --- RIGHT: Workout Logs ---
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         self.lbl_details = QLabel("<b>Workout Details</b>")
         right_layout.addWidget(self.lbl_details)
-        
+
         self.log_table = QTableWidget(0, 5)
         self.log_table.setHorizontalHeaderLabels(["Exercise", "Set", "Reps", "Weight", "RPE"])
         self.log_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         right_layout.addWidget(self.log_table)
-        
+
         splitter.addWidget(right_panel)
         splitter.setSizes([400, 600])
         layout.addWidget(splitter)
@@ -164,10 +166,10 @@ class WorkoutHistoryView(BaseView):
         self.workout_table.blockSignals(True)
         self.workout_table.setRowCount(0)
         self.log_table.setRowCount(0)
-        
+
         # Give user visual feedback that data is loading
-        self.lbl_details.setText("<b>Loading Workout History...</b>") 
-        
+        self.lbl_details.setText("<b>Loading Workout History...</b>")
+
         # Dispatch background worker
         worker = Worker(self._fetch_history)
         worker.signals.result.connect(self._render_history)
@@ -184,10 +186,10 @@ class WorkoutHistoryView(BaseView):
             self.workout_table.setItem(i, 0, QTableWidgetItem(w['date'].split(" ")[0]))
             self.workout_table.setItem(i, 1, QTableWidgetItem(w['name']))
             self.workout_table.setItem(i, 2, QTableWidgetItem(f"{w['duration_minutes']} min"))
-            
+
             # Store ID invisibly for querying specific logs later
             self.workout_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, w['id'])
-            
+
         self.workout_table.blockSignals(False)
         self.lbl_details.setText("<b>Select a workout to view details</b>")
 
@@ -195,13 +197,13 @@ class WorkoutHistoryView(BaseView):
         """Dispatches a thread to fetch specific logs when a row is clicked."""
         row = self.workout_table.currentRow()
         if row < 0: return
-        
+
         workout_id = self.workout_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         name = self.workout_table.item(row, 1).text()
-        
+
         self.lbl_details.setText(f"<b>Loading Details for: {name}...</b>")
         self.log_table.setRowCount(0)
-        
+
         # Fetching specific logs can be heavy, offload it
         worker = Worker(WorkoutDatabaseManager.get_workout_logs, workout_id)
         # Using lambda allows us to pass the 'name' parameter alongside the result
@@ -223,14 +225,14 @@ class WorkoutHistoryView(BaseView):
         dialog = ManualWorkoutEntryDialog(self.current_user_id, self)
         if dialog.exec():
             self.refresh_data()
-    
+
     def _delete_selected_workout(self):
         row = self.workout_table.currentRow()
         if row < 0: return
-        
+
         workout_id = self.workout_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         confirm = QMessageBox.question(self, "Confirm Delete", "Are you sure you want to permanently delete this workout and all its sets?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        
+
         if confirm == QMessageBox.StandardButton.Yes:
             WorkoutDatabaseManager.delete_workout(workout_id)
             self.refresh_data()
