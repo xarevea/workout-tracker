@@ -1,7 +1,22 @@
+# ui/components/minimap.py
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
+
+class ClickableLabel(QLabel):
+    clicked = pyqtSignal(int)
+
+    def __init__(self, index, text, parent=None):
+        super().__init__(text, parent)
+        self.index = index
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        self.clicked.emit(self.index)
+        super().mousePressEvent(event)
 
 class WorkoutMinimap(QWidget):
+    nodeClicked = pyqtSignal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
@@ -20,7 +35,6 @@ class WorkoutMinimap(QWidget):
         self.layout.addWidget(self.scroll_area)
 
     def update_map(self, controller):
-        # 1. Clear old widgets
         for i in reversed(range(self.inner_layout.count())):
             item = self.inner_layout.itemAt(i)
             if item.widget():
@@ -28,28 +42,27 @@ class WorkoutMinimap(QWidget):
 
         if not controller.exercises: return
 
-        # 2. Get active statuses
         active_task = controller.get_current_task()
         active_ex_name = active_task['exercise']['name'] if active_task else None
 
-        # Group data for display
         logs_by_ex = {}
         for log in controller.session_logs:
             logs_by_ex.setdefault(log['exercise'], []).append(log)
 
         queue_by_ex = {}
         for i, q in enumerate(controller.queue):
-            if i >= controller.queue_index: # Only look at upcoming
+            if i >= controller.queue_index:
                 queue_by_ex.setdefault(q['exercise']['name'], []).append((i, q))
 
-        # 3. Draw the tree
         for i, ex in enumerate(controller.exercises):
             ex_name = ex['name']
             is_active = (ex_name == active_ex_name)
             is_completed = (ex_name not in queue_by_ex) and not is_active
 
-            # MAIN HEADER
-            lbl = QLabel(f"{i+1}. {ex_name}")
+            # INTERACTIVE LABEL
+            lbl = ClickableLabel(i, f"{i+1}. {ex_name}")
+            lbl.clicked.connect(self.nodeClicked.emit)
+
             if is_active:
                 lbl.setStyleSheet("color: #4CAF50; font-weight: bold; padding: 5px; background-color: #2d2d2d; border-radius: 5px; font-size: 14px;")
             elif is_completed:
@@ -59,9 +72,7 @@ class WorkoutMinimap(QWidget):
 
             self.inner_layout.addWidget(lbl)
 
-            # SUB-ITEMS FOR ACTIVE EXERCISE
             if is_active:
-                # 1. Completed Sets
                 for log in logs_by_ex.get(ex_name, []):
                     prefix = "Warm-up" if log.get('is_warmup') else f"Set {log['set']}"
                     t = "s" if ex.get('tracks_time') else " reps"
@@ -71,7 +82,6 @@ class WorkoutMinimap(QWidget):
                     sub_lbl.setStyleSheet("color: #888888; text-decoration: line-through; font-size: 12px;")
                     self.inner_layout.addWidget(sub_lbl)
 
-                # 2. Queued / Upcoming Sets
                 for q_i, q_task in queue_by_ex.get(ex_name, []):
                     prefix = "Warm-up" if q_task.get('is_warmup') else f"Set {q_task['set_number']}"
                     t = "s" if q_task['exercise'].get('tracks_time') else " reps"
@@ -79,7 +89,7 @@ class WorkoutMinimap(QWidget):
 
                     sub_lbl = QLabel(txt)
                     if q_i == controller.queue_index:
-                        sub_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 12px;") # Highlight current
+                        sub_lbl.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 12px;")
                     else:
                         sub_lbl.setStyleSheet("color: #b0b0b0; font-size: 12px;")
                     self.inner_layout.addWidget(sub_lbl)

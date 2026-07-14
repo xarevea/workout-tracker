@@ -11,8 +11,14 @@ class BarbellVisualizer(QWidget):
         self.is_barbell = True
 
         self.color_map = {
-            55.0: QColor("#F44336"), 45.0: QColor("#2196F3"), 35.0: QColor("#FFEB3B"),
-            25.0: QColor("#4CAF50"), 10.0: QColor("#FFFFFF"), 5.0:  QColor("#9E9E9E"), 2.5:  QColor("#424242")
+            55.0: QColor("#F44336"),
+            45.0: QColor("#2196F3"),
+            35.0: QColor("#FFEB3B"),
+            25.0: QColor("#4CAF50"),
+            15.0: QColor("#FF9800"),
+            10.0: QColor("#FFFFFF"),
+            5.0:  QColor("#9E9E9E"),
+            2.5:  QColor("#424242"),
         }
 
     def set_loadout(self, plates: tuple, is_barbell: bool = True):

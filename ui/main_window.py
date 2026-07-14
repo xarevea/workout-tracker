@@ -21,7 +21,6 @@ from ui.views.equipment import EquipmentView
 from ui.views.exercise_dictionary import ExerciseDictionaryView
 from ui.views.history import WorkoutHistoryView
 from ui.views.program_sandbox import ProgramSandboxView
-from ui.views.routine_builder import RoutineBuilderView
 from ui.views.settings import SettingsView
 from utils.gui_utils import add_button_above_stretch, create_sidebar_button
 
@@ -34,7 +33,7 @@ class FadingStackedWidget(QStackedWidget):
         self.currentWidget().setGraphicsEffect(self.fade_out)
 
         self.anim_out = QPropertyAnimation(self.fade_out, b"opacity")
-        self.anim_out.setDuration(100) # Fast 100ms fade
+        self.anim_out.setDuration(100)
         self.anim_out.setStartValue(1.0)
         self.anim_out.setEndValue(0.0)
 
@@ -48,7 +47,7 @@ class FadingStackedWidget(QStackedWidget):
         self.currentWidget().setGraphicsEffect(self.fade_in)
 
         self.anim_in = QPropertyAnimation(self.fade_in, b"opacity")
-        self.anim_in.setDuration(150) # 150ms fade in
+        self.anim_in.setDuration(150)
         self.anim_in.setStartValue(0.0)
         self.anim_in.setEndValue(1.0)
         self.anim_in.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
@@ -73,7 +72,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Hybrid Tracker")
         self.resize(1100, 700)
 
-        # Minimize to System Tray
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
 
@@ -91,7 +89,6 @@ class MainWindow(QMainWindow):
 
         self._is_force_quit = False
 
-        # Main widget
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QHBoxLayout(self.central_widget)
@@ -109,7 +106,6 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event):
-        """Intercept the X button to minimize to tray instead."""
         if not self._is_force_quit:
             event.ignore()
             self.hide()
@@ -128,7 +124,6 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout(self.header_widget)
         header_layout.setContentsMargins(15, 10, 15, 10)
 
-        # --- User & Program Context Switchers ---
         switcher_layout = QHBoxLayout()
         switcher_layout.setSpacing(10)
 
@@ -136,38 +131,50 @@ class MainWindow(QMainWindow):
         lbl_user.setStyleSheet("color: #b0b0b0; font-weight: bold;")
 
         self.user_combo = QComboBox()
-        self.user_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents) # FIX TRUNCATION
+        self.user_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.user_combo.setStyleSheet("padding: 5px; border-radius: 4px; background: #1e1e1e; color: white;")
         self.user_combo.currentIndexChanged.connect(self._on_user_changed)
 
-        btn_add_user = QPushButton("+")
+        btn_add_user = QPushButton("")
+        btn_add_user.setIcon(qta.icon('fa5s.user-plus', color='white'))
         btn_add_user.setFixedSize(25, 25)
-        btn_add_user.setStyleSheet("background-color: #4CAF50; color: white; border-radius: 4px; font-weight: bold;")
+        btn_add_user.setStyleSheet("background-color: #4CAF50; border-radius: 4px;")
         btn_add_user.clicked.connect(self._add_new_user)
 
-        btn_del_user = QPushButton("-")
+        btn_del_user = QPushButton("")
+        btn_del_user.setIcon(qta.icon('fa5s.user-minus', color='white'))
         btn_del_user.setFixedSize(25, 25)
-        btn_del_user.setStyleSheet("background-color: #F44336; color: white; border-radius: 4px; font-weight: bold;")
+        btn_del_user.setStyleSheet("background-color: #F44336; border-radius: 4px;")
         btn_del_user.clicked.connect(self._delete_current_user)
 
         lbl_program = QLabel("📋 Program:")
         lbl_program.setStyleSheet("color: #b0b0b0; font-weight: bold;")
+
         self.program_combo = QComboBox()
-        self.program_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents) # FIX TRUNCATION
+        self.program_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.program_combo.setStyleSheet("padding: 5px; border-radius: 4px; background: #1e1e1e; color: white;")
         self.program_combo.currentIndexChanged.connect(self._on_program_changed)
 
-        btn_del_program = QPushButton("-")
+        btn_add_program = QPushButton("") # Not directly connected right now, serves as an anchor for sandbox
+        btn_add_program.setIcon(qta.icon('fa5s.folder-plus', color='white'))
+        btn_add_program.setFixedSize(25, 25)
+        btn_add_program.setStyleSheet("background-color: #2196F3; border-radius: 4px;")
+        btn_add_program.setToolTip("Go to Program Sandbox to add new programs.")
+
+        btn_del_program = QPushButton("")
+        btn_del_program.setIcon(qta.icon('fa5s.trash-alt', color='white'))
         btn_del_program.setFixedSize(25, 25)
-        btn_del_program.setStyleSheet("background-color: #F44336; color: white; border-radius: 4px; font-weight: bold;")
+        btn_del_program.setStyleSheet("background-color: #F44336; border-radius: 4px;")
         btn_del_program.clicked.connect(self._delete_current_program)
 
         switcher_layout.addWidget(lbl_user)
         switcher_layout.addWidget(self.user_combo)
         switcher_layout.addWidget(btn_add_user)
         switcher_layout.addWidget(btn_del_user)
+        switcher_layout.addSpacing(15)
         switcher_layout.addWidget(lbl_program)
         switcher_layout.addWidget(self.program_combo)
+        switcher_layout.addWidget(btn_add_program)
         switcher_layout.addWidget(btn_del_program)
 
         header_layout.addLayout(switcher_layout)
@@ -178,15 +185,11 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.lbl_global_timer)
 
     def _initialize_context(self):
-        """Loads users and their programs into the header dropdowns."""
         self.user_combo.blockSignals(True)
         self.user_combo.clear()
-
         users = WorkoutDatabaseManager.get_all_users()
-
         for u in users:
             self.user_combo.addItem(u['username'], u['id'])
-
         self.user_combo.blockSignals(False)
 
         if self.user_combo.count() > 0:
@@ -196,14 +199,12 @@ class MainWindow(QMainWindow):
         user_id = self.user_combo.itemData(index)
         if not user_id: return
 
-        # CORRECT PyQt6 Event emission
         event_bus.USER_CHANGED.emit(user_id)
 
         self.program_combo.blockSignals(True)
         self.program_combo.clear()
 
         programs = WorkoutDatabaseManager.get_programs_for_user(user_id)
-
         active_idx = 0
         for i, p in enumerate(programs):
             self.program_combo.addItem(p['name'], p['id'])
@@ -212,7 +213,6 @@ class MainWindow(QMainWindow):
 
         if programs:
             self.program_combo.setCurrentIndex(active_idx)
-
         self.program_combo.blockSignals(False)
 
         if self.program_combo.count() > 0:
@@ -223,7 +223,7 @@ class MainWindow(QMainWindow):
         if ok and username.strip():
             try:
                 new_id = WorkoutDatabaseManager.create_user(username.strip())
-                self._initialize_context() # Reload dropdowns
+                self._initialize_context()
                 index = self.user_combo.findData(new_id)
                 if index >= 0:
                     self.user_combo.setCurrentIndex(index)
@@ -234,20 +234,15 @@ class MainWindow(QMainWindow):
         user_id = self.user_combo.currentData()
         program_id = self.program_combo.itemData(index)
         if not program_id or not user_id: return
-
         WorkoutDatabaseManager.set_active_program(user_id, program_id)
-
-        # CORRECT PyQt6 Event emission
         event_bus.PROGRAM_CHANGED.emit(program_id)
 
     def _setup_ui(self):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-
         master_layout = QVBoxLayout(main_widget)
         master_layout.setContentsMargins(0, 0, 0, 0)
         master_layout.setSpacing(0)
-
         master_layout.addWidget(self.header_widget)
 
         body_widget = QWidget()
@@ -282,78 +277,61 @@ class MainWindow(QMainWindow):
         self._stacked_widget_list = []
         self.stacked_widget = FadingStackedWidget()
 
-        # 1. Dashboard
         self.dashboard_view = DashboardView()
         self._add_stacked_widget(self.dashboard_view, "Dashboard", qta.icon('fa5s.chart-line', color='white'))
 
-        # 2. Active Workout
         self.workout_view = QWidget()
         workout_layout = QHBoxLayout(self.workout_view)
-
         self.minimap = WorkoutMinimap()
         self.session_controller = WorkoutSessionController()
-
         self.active_tracker = ActiveTrackerWidget(
             controller=self.session_controller,
             minimap=self.minimap,
             global_timer_lbl=self.lbl_global_timer,
         )
-
         self.workout_container = WorkoutContainer(self.minimap, self.active_tracker)
         self._add_stacked_widget(self.workout_container, "Active Workout")
 
-        # 3. Unified Program Sandbox (Replaces Routine & Program Builders)
         self.program_sandbox_view = ProgramSandboxView()
         self._add_stacked_widget(self.program_sandbox_view, "Program Sandbox")
 
-        # 4. Workout History
         self.history_view = WorkoutHistoryView()
         self._add_stacked_widget(self.history_view, "Workout History")
 
-        # 5. Bodyweight Hub
         self.bodyweight_view = BodyweightHubView()
         self._add_stacked_widget(self.bodyweight_view, "Bodyweight Hub")
 
-        # 6. Exercise Bank
         self.exercise_dict_view = ExerciseDictionaryView()
         self._add_stacked_widget(self.exercise_dict_view, "Exercise Bank")
 
-        # 7. My Garage
         self.equipment_view = EquipmentView()
         self._add_stacked_widget(self.equipment_view, "My Garage")
 
-        # 8. Settings
         self.settings_view = SettingsView()
         self._add_stacked_widget(self.settings_view, "Settings")
 
-        # 9. Clinical Analytics
         self.clinical_view = ClinicalAnalyticsView()
         self._add_stacked_widget(self.clinical_view, "Clinical Analytics", qta.icon('fa5s.heartbeat', color='#FF9800'))
 
-        self._switch_view(0) # Initialize default view
+        self._switch_view(0)
 
     def _add_stacked_widget(self, widget_view, btn_name: str, icon=None):
         self._stacked_widget_list.append(widget_view)
         self.stacked_widget.addWidget(widget_view)
 
         this_button = create_sidebar_button(btn_name)
-        if icon:
-            this_button.setIcon(icon)
+        if icon: this_button.setIcon(icon)
         this_button.clicked.connect(lambda *args, index=self._next_idx: self._switch_view(index))
         self.nav_buttons.append(this_button)
 
-        # Add the button above the stretch
         add_button_above_stretch(self.sidebar_layout, this_button)
-
         self._next_idx += 1
 
     def _switch_view(self, index: int):
         self.stacked_widget.setCurrentIndex(index)
-
         for i, btn in enumerate(self.nav_buttons):
             btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;" if i == index else "")
 
-        # Trigger Lazy Load
         for i, view in enumerate(self._stacked_widget_list):
             if hasattr(view, 'set_active_view'):
                 view.set_active_view(i == index)

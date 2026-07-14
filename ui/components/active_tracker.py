@@ -1,13 +1,13 @@
+# ui/components/active_tracker.py
 import os
 import time
-from collections import defaultdict
+from collections import defaultdict, Counter
 from enum import Enum, auto
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QSpinBox, QDoubleSpinBox, QSlider,
     QGroupBox, QScrollArea, QComboBox, QCheckBox,
-    QListWidget, QListWidgetItem, QDialog, QTableWidget,
-    QTableWidgetItem, QLineEdit, QHeaderView
+    QDialog, QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, QThreadPool, QRectF
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont
@@ -145,10 +145,10 @@ class MiniWorkoutWidget(QWidget):
         self.main_tracker = main_tracker
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        self.setFixedSize(240, 150)
+        self.setFixedSize(240, 135)
 
         self.frame = QWidget(self)
-        self.frame.setGeometry(0, 0, 240, 150)
+        self.frame.setGeometry(0, 0, 240, 135)
         self.frame.setStyleSheet("background-color: rgba(30, 30, 30, 230); border-radius: 10px; border: 1px solid #555; color: white;")
 
         layout = QVBoxLayout(self.frame)
@@ -283,6 +283,7 @@ class ActiveTrackerWidget(QWidget):
         self.buffer_remaining = 0
         self.set_time_remaining = 0
         self.current_left_loadout = []
+        self._last_exercise_name = None
 
         self.tray = QSystemTrayIcon(self)
         self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
@@ -294,6 +295,8 @@ class ActiveTrackerWidget(QWidget):
         self._setup_audio()
         self._setup_ui()
         self._setup_timers()
+
+        self.minimap.nodeClicked.connect(self._preview_exercise)
 
     def announce(self, text: str):
         if self.audio_enabled and self.chk_voice.isChecked() and self.tts:
@@ -310,7 +313,10 @@ class ActiveTrackerWidget(QWidget):
             self.combo_workout_selector.addItem("-- No Program / Rest Day --")
         else:
             for t in templates:
-                self.combo_workout_selector.addItem(f"{t['name']} (Day {t['day_number']})", userData=t['id'])
+                if f"Day {t['day_number']}" in t['name']:
+                    self.combo_workout_selector.addItem(t['name'], userData=t['id'])
+                else:
+                    self.combo_workout_selector.addItem(f"{t['name']} (Day {t['day_number']})", userData=t['id'])
 
         self.combo_workout_selector.blockSignals(False)
 
@@ -331,6 +337,7 @@ class ActiveTrackerWidget(QWidget):
             self.lbl_timer.setText("00:00")
             self.lbl_timer.setStyleSheet("color: white;")
             self.controller.start_time = 0
+            self._last_exercise_name = None
 
             self.rest_container.hide()
             self.log_group.setEnabled(True)
@@ -428,22 +435,35 @@ class ActiveTrackerWidget(QWidget):
         info_layout = QHBoxLayout()
         text_layout = QVBoxLayout()
 
+        self.btn_exit_preview = QPushButton("← Return to Active Set")
+        self.btn_exit_preview.setStyleSheet("background-color: #F44336; color: white; font-weight: bold; padding: 5px; border-radius: 4px;")
+        self.btn_exit_preview.clicked.connect(self._update_display)
+        self.btn_exit_preview.hide()
+
         self.lbl_progress = QLabel("EXERCISE - OF -")
         self.lbl_progress.setStyleSheet("color: #888888; font-size: 14px; font-weight: bold; letter-spacing: 1px;")
 
         self.lbl_exercise_name = QLabel("Select a template...")
         self.lbl_exercise_name.setFont(QFont("Arial", 24, QFont.Weight.Bold))
+
+        self.lbl_cues = QLabel()
+        self.lbl_cues.setWordWrap(True)
+        self.lbl_cues.setStyleSheet("color: #b0b0b0; font-style: italic; font-size: 15px;")
+
         self.barbell_visualizer = BarbellVisualizer()
+
+        self.lbl_plate_math = QLabel()
+        self.lbl_plate_math.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_plate_math.setStyleSheet("color: #FF9800; font-weight: bold; font-size: 14px; margin-bottom: 10px;")
+
         self.lbl_set_tracker = QLabel("-")
 
-        self.cues_list = QListWidget()
-        self.cues_list.setStyleSheet("background-color: transparent; border: none; color: #b0b0b0; font-style: italic;")
-        self.cues_list.setMaximumHeight(80)
-
+        text_layout.addWidget(self.btn_exit_preview)
         text_layout.addWidget(self.lbl_progress)
         text_layout.addWidget(self.lbl_exercise_name)
-        text_layout.addWidget(self.cues_list)
-        text_layout.addWidget(self.barbell_visualizer )
+        text_layout.addWidget(self.lbl_cues)
+        text_layout.addWidget(self.barbell_visualizer)
+        text_layout.addWidget(self.lbl_plate_math)
         text_layout.addWidget(self.lbl_set_tracker)
         text_layout.addStretch()
 
@@ -454,8 +474,6 @@ class ActiveTrackerWidget(QWidget):
         info_layout.setStretch(0, 1)
         info_layout.setStretch(1, 1)
         layout.addLayout(info_layout)
-
-        # Removed Completed Sets History GroupBox and Scroll Area completely to clean UI
 
         self.log_group = QGroupBox("Log Current Set")
         log_layout = QVBoxLayout()
@@ -520,10 +538,12 @@ class ActiveTrackerWidget(QWidget):
         self.slider_rpe.setValue(7)
         self.slider_rpe.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.lbl_rpe_val = QLabel("RPE: 7")
-        self.slider_rpe.valueChanged.connect(lambda v: self.lbl_rpe_val.setText(f"RPE: {v}"))
+        self.slider_rpe.valueChanged.connect(self._on_rpe_changed)
+        self._on_rpe_changed(7)
 
         self.txt_notes = QLineEdit()
         self.txt_notes.setPlaceholderText("Set Notes...")
+        self.txt_notes.setStyleSheet("background: #2a2a2a; border: 1px solid #555; padding: 4px; border-radius: 4px;")
 
         rpe_layout.addWidget(QLabel("Effort:"))
         rpe_layout.addWidget(self.slider_rpe)
@@ -554,6 +574,13 @@ class ActiveTrackerWidget(QWidget):
         log_layout.addLayout(btn_layout)
         self.log_group.setLayout(log_layout)
         layout.addWidget(self.log_group)
+
+    def _on_rpe_changed(self, v):
+        self.lbl_rpe_val.setText(f"RPE: {v}")
+        if v <= 6: color = "#4CAF50" # Green
+        elif v <= 8: color = "#FF9800" # Orange
+        else: color = "#F44336" # Red
+        self.lbl_rpe_val.setStyleSheet(f"color: {color}; font-weight: bold;")
 
     def _toggle_static_mode(self):
         self.is_static_mode = not self.is_static_mode
@@ -672,15 +699,68 @@ class ActiveTrackerWidget(QWidget):
         self.rest_container.hide()
         self.btn_log.setEnabled(True)
 
+    def _preview_exercise(self, index: int):
+        if not self.controller.exercises or index >= len(self.controller.exercises): return
+
+        ex = self.controller.exercises[index]
+        is_bb = (ex.get('category') == 'Barbell')
+
+        self.btn_exit_preview.show()
+        self.log_group.setEnabled(False)
+
+        self.lbl_progress.setText(f"PREVIEW: EXERCISE {index + 1} OF {len(self.controller.exercises)}")
+        self.lbl_progress.setStyleSheet("color: #FF9800; font-size: 14px; font-weight: bold; letter-spacing: 1px;")
+        self.lbl_exercise_name.setText(ex['name'])
+
+        cues_text = ex.get('cues')
+        if not cues_text: cues_text = "1. Focus on form\n2. Maintain tension\n3. Full range of motion"
+
+        html_cues = "<ul style='margin-top: 0; margin-bottom: 0; padding-left: 20px;'>"
+        for cue in cues_text.split('\n'):
+            if cue.strip():
+                clean_cue = cue.lstrip('0123456789. ')
+                html_cues += f"<li>{clean_cue}</li>"
+        html_cues += "</ul>"
+        self.lbl_cues.setText(html_cues)
+
+        self.lbl_set_tracker.setText("Preview Mode - Logging Disabled")
+
+        loadout = PlateCalculator.calculate_loadout(ex['target_weight'], user_id=self.controller.current_user_id, is_barbell=is_bb, current_side_loadout=[])
+
+        if loadout is not None:
+            self.barbell_visualizer.set_loadout(loadout, is_barbell=is_bb)
+            self.barbell_visualizer.show()
+
+            counts = Counter(loadout[0]) if is_bb else Counter(loadout[1])
+            parts = [f"{count}x{weight:g}" for weight, count in sorted(counts.items(), reverse=True)]
+            math_str = ", ".join(parts) if parts else "Empty"
+            prefix = "Load Per Side: " if is_bb else "Attach to Belt/Stack: "
+            self.lbl_plate_math.setText(prefix + math_str)
+        else:
+            self.barbell_visualizer.hide()
+            self.lbl_plate_math.setText("")
+
+        volume_map = {}
+        if ex.get('primary_muscle'): volume_map[ex['primary_muscle']] = 15
+        if ex.get('secondary_muscles'):
+            for sec in [s.strip() for s in ex['secondary_muscles'].split(',') if s.strip()]: volume_map[sec] = 5
+        self.exercise_heatmap.update_heatmap(volume_map)
+
     def _update_display(self):
         task = self.controller.get_current_task()
 
         self._reset_timed_set()
         self.minimap.update_map(self.controller)
 
+        self.btn_exit_preview.hide()
+        self.log_group.setEnabled(True)
+        self.lbl_progress.setStyleSheet("color: #888888; font-size: 14px; font-weight: bold; letter-spacing: 1px;")
+
         if not task:
             self.lbl_progress.setText("WORKOUT COMPLETE")
             self.lbl_exercise_name.setText("Workout Complete!")
+            self.lbl_cues.setText("")
+            self.lbl_plate_math.setText("")
             self.lbl_set_tracker.setText("-")
             self.btn_log.setEnabled(False)
             self.btn_play_pause.setEnabled(False)
@@ -694,6 +774,10 @@ class ActiveTrackerWidget(QWidget):
         current_set_num = task['set_number']
         is_emom = task.get('is_emom', False)
         is_warmup = task.get('is_warmup', False)
+
+        if current_ex['name'] != self._last_exercise_name:
+            self.txt_notes.clear()
+            self._last_exercise_name = current_ex['name']
 
         idx = next((i for i, e in enumerate(self.controller.exercises) if e['name'] == current_ex['name']), 0)
 
@@ -716,9 +800,13 @@ class ActiveTrackerWidget(QWidget):
         if not cues_text:
              cues_text = "1. Focus on form\n2. Maintain tension\n3. Full range of motion"
 
-        self.cues_list.clear()
+        html_cues = "<ul style='margin-top: 0; margin-bottom: 0; padding-left: 20px;'>"
         for cue in cues_text.split('\n'):
-            self.cues_list.addItem(QListWidgetItem(cue))
+            if cue.strip():
+                clean_cue = cue.lstrip('0123456789. ')
+                html_cues += f"<li>{clean_cue}</li>"
+        html_cues += "</ul>"
+        self.lbl_cues.setText(html_cues)
 
         total_ex = len(self.controller.exercises)
         self.lbl_progress.setText(f"EXERCISE {idx + 1} OF {total_ex}")
@@ -730,7 +818,6 @@ class ActiveTrackerWidget(QWidget):
         self.spin_weight.setValue(task['target_weight'])
         self.spin_reps.setValue(task['target_reps'])
         self.chk_warmup.setChecked(is_warmup)
-        self.txt_notes.clear()
 
         is_bb = (current_ex.get('category') == 'Barbell')
         loadout = PlateCalculator.calculate_loadout(task['target_weight'], user_id=self.controller.current_user_id, is_barbell=is_bb, current_side_loadout=self.current_left_loadout)
@@ -739,9 +826,16 @@ class ActiveTrackerWidget(QWidget):
             self.current_left_loadout = loadout[0]
             self.barbell_visualizer.set_loadout(loadout, is_barbell=is_bb)
             self.barbell_visualizer.show()
+
+            counts = Counter(loadout[0]) if is_bb else Counter(loadout[1])
+            parts = [f"{count}x{weight:g}" for weight, count in sorted(counts.items(), reverse=True)]
+            math_str = ", ".join(parts) if parts else "Empty"
+            prefix = "Load Per Side: " if is_bb else "Attach to Belt/Stack: "
+            self.lbl_plate_math.setText(prefix + math_str)
         else:
             self.current_left_loadout = []
             self.barbell_visualizer.hide()
+            self.lbl_plate_math.setText("")
 
         volume_map = {}
         if current_ex.get('primary_muscle'): volume_map[current_ex['primary_muscle']] = 15
@@ -794,6 +888,7 @@ class ActiveTrackerWidget(QWidget):
                 self.rest_container.show()
                 next_task = self.controller.get_current_task()
                 if next_task:
+                    self.lbl_rest.setText(f"Resting... (Up Next: {next_task['exercise']['name']})")
                     self.announce(f"Rest started. Next up: {next_task['exercise']['name']}.")
             else:
                 self._skip_rest()

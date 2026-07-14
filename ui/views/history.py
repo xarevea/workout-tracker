@@ -124,10 +124,15 @@ class WorkoutHistoryView(BaseView):
 
         self.workout_table = QTableWidget(0, 3)
         self.workout_table.setHorizontalHeaderLabels(["Date", "Workout", "Duration"])
-        self.workout_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+
+        self.workout_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents) # Date
+        self.workout_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch) # Workout Name
+        self.workout_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents) # Duration
+
         self.workout_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.workout_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.workout_table.itemSelectionChanged.connect(self._on_workout_selected)
+
         left_layout.addWidget(self.workout_table)
 
         btn_layout = QHBoxLayout()
@@ -153,6 +158,8 @@ class WorkoutHistoryView(BaseView):
         self.log_table = QTableWidget(0, 6)
         self.log_table.setHorizontalHeaderLabels(["Exercise", "Set", "Reps", "Weight", "RPE", "Notes"])
         self.log_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for i in range(1, 6):
+            self.log_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
         right_layout.addWidget(self.log_table)
 
         splitter.addWidget(right_panel)

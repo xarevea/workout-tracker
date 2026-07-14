@@ -300,7 +300,7 @@ class ProgramSandboxView(BaseView):
         self.lbl_fatigue.setStyleSheet("color: #4CAF50; font-weight: bold;")
         layout.addWidget(self.lbl_fatigue)
 
-        self.btn_save = QPushButton("Configure & Save Program")
+        self.btn_save = QPushButton("Configure && Save Program")
         self.btn_save.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
         self.btn_save.clicked.connect(self._save_program)
         layout.addWidget(self.btn_save)

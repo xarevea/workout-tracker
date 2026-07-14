@@ -21,7 +21,7 @@ from utils.threads import Worker
 class DashboardView(BaseView):
     def __init__(self, parent=None):
         super().__init__(parent)
-        event_bus.WORKOUT_COMPLETED.connect(self.refresh_data) 
+        event_bus.WORKOUT_COMPLETED.connect(self.refresh_data)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(20, 20, 20, 20)
 
@@ -31,7 +31,7 @@ class DashboardView(BaseView):
         title = QLabel("Performance Dashboard")
         title.setStyleSheet("font-size: 24px; font-weight: bold;")
         left_top_layout.addWidget(title)
-        
+
         self.calendar = QCalendarWidget()
         self.calendar.setFixedSize(350, 200)
         self.calendar.setStyleSheet("background-color: #2d2d2d; color: white;")
@@ -60,11 +60,11 @@ class DashboardView(BaseView):
         self._highlight_calendar_dates()
         volume_map = WorkoutDatabaseManager.get_active_program_volume(self.current_user_id)
         self.heatmap.update_heatmap(volume_map)
-        
+
         exercises = WorkoutDatabaseManager.get_tracked_exercises(self.current_user_id)
         self.exercise_dropdown.blockSignals(True)
         self.exercise_dropdown.clear()
-        
+
         self.exercise_dropdown.addItem("Overview: Total Weekly Volume (Tonnage)")
         self.exercise_dropdown.addItem("Overview: Weight Loss vs. Calisthenics Strength")
         self.exercise_dropdown.addItems(exercises)
@@ -78,7 +78,7 @@ class DashboardView(BaseView):
         fmt.setForeground(QColor("white"))
         fmt.setFontWeight(75)
 
-        self.calendar.setDateTextFormat(QDate(), QTextCharFormat()) 
+        self.calendar.setDateTextFormat(QDate(), QTextCharFormat())
         for date_str in dates:
             y, m, d = map(int, date_str.split('-'))
             qdate = QDate(y, m, d)
@@ -86,19 +86,19 @@ class DashboardView(BaseView):
 
     def _plot_trend_data(self, selection: str):
         if not selection: return
-        
+
         # 1. Safely wipe the existing graph entirely to prevent Dual-Axis ghosting
         self.layout.removeWidget(self.graph_widget)
         self.graph_widget.deleteLater()
-        
+
         self.graph_widget = pg.PlotWidget()
         self.graph_widget.setBackground('#1e1e1e')
         self.layout.addWidget(self.graph_widget)
-        
+
         # 2. Add loading text directly to the ViewBox
         text = pg.TextItem("Crunching Dataset...", color='white', anchor=(0.5, 0.5))
         self.graph_widget.addItem(text)
-        
+
         # 3. Dispatch the appropriate thread
         if selection == "Overview: Weight Loss vs. Calisthenics Strength":
             worker = Worker(self._fetch_bw_vs_cal_data)
@@ -109,13 +109,13 @@ class DashboardView(BaseView):
         else:
             worker = Worker(self._fetch_1rm_data, selection)
             worker.signals.result.connect(lambda res: self._render_1rm_data(selection, res))
-            
+
         QThreadPool.globalInstance().start(worker)
 
     def _show_workout_summary(self, qdate):
         date_str = qdate.toString("yyyy-MM-dd")
         workouts = WorkoutDatabaseManager.get_workout_history(self.current_user_id)
-        
+
         day_workouts = [w for w in workouts if w['date'].startswith(date_str)]
 
         if not day_workouts:
@@ -134,19 +134,19 @@ class DashboardView(BaseView):
 
     def _fetch_bw_vs_cal_data(self):
         """Runs in the background thread."""
-        bw = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id) 
-        cal = WorkoutDatabaseManager.get_calisthenics_volume_trend(self.current_user_id) 
+        bw = WorkoutDatabaseManager.get_bodyweight_history(self.current_user_id)
+        cal = WorkoutDatabaseManager.get_calisthenics_volume_trend(self.current_user_id)
         return bw, cal
 
     def _render_bw_vs_cal(self, data):
         self.graph_widget.clear() # Clear loading text
         bw_data, cal_data = data
         if not bw_data and not cal_data: return
-            
+
         # Extract and sort unique dates
         all_dates = sorted(list(set([d['date'] for d in bw_data] + list(cal_data.keys()))))
         timestamps = [datetime.strptime(d, "%Y-%m-%d").timestamp() for d in all_dates]
-        
+
         bw_y = []
         last_bw = bw_data[0]['weight_lbs'] if bw_data else 180
         bw_dict = {d['date']: d['weight_lbs'] for d in bw_data}
@@ -159,12 +159,12 @@ class DashboardView(BaseView):
         # 1. Setup the X-Axis as Dates
         date_axis = pg.DateAxisItem(orientation='bottom')
         self.graph_widget.setAxisItems({'bottom': date_axis})
-        
+
         # 2. Setup the PlotItem (Base Layer for Bodyweight)
         p1 = self.graph_widget.plotItem
         p1.setLabels(left='Bodyweight (lbs)', bottom='Date')
         p1.getAxis('left').setTextPen('#FF9800')
-        
+
         # Plot Bodyweight
         pen = pg.mkPen(color='#FF9800', width=2)
         p1.plot(timestamps, bw_y, pen=pen, symbol='o', symbolSize=6, symbolBrush='#FF9800')
@@ -182,7 +182,7 @@ class DashboardView(BaseView):
         def updateViews():
             p2.setGeometry(p1.vb.sceneBoundingRect())
             p2.linkedViewChanged(p1.vb, p2.XAxis)
-            
+
         updateViews()
         p1.vb.sigResized.connect(updateViews)
 
@@ -203,10 +203,10 @@ class DashboardView(BaseView):
 
         dates = list(data.keys())
         weights = list(data.values())
-        
+
         # PyQtGraph requires unix timestamps for its DateAxis
         timestamps = [datetime.strptime(d, "%Y-%m-%d").timestamp() for d in dates]
-        
+
         # 1. Plot the actual points and lines
         pen = pg.mkPen(color='#2196F3', width=3)
         self.graph_widget.plot(timestamps, weights, pen=pen, symbol='o', symbolSize=8, symbolBrush='#2196F3', name="Estimated 1RM")
@@ -217,13 +217,13 @@ class DashboardView(BaseView):
             m, b = np.polyfit(timestamps, weights, 1)
             future_timestamps = np.linspace(timestamps[0], timestamps[-1] + (86400 * 14), len(dates) + 2)
             y_pred = m * future_timestamps + b
-            
+
             trend_pen = pg.mkPen(color='#FF9800', width=2, style=Qt.PenStyle.DashLine)
             self.graph_widget.plot(future_timestamps, y_pred, pen=trend_pen, name="Predicted Trend")
 
         self.graph_widget.setTitle(f"Strength Progression: {exercise_name}", color="white", size="14pt")
         self.graph_widget.setLabel('left', "Estimated 1RM (lbs)", color="white")
-        
+
         # Add interactive legend
         self.graph_widget.addLegend()
 
@@ -232,19 +232,22 @@ class DashboardView(BaseView):
 
     def _render_tonnage(self, data: dict):
         self.graph_widget.clear()
-        
+
         # Change axis back to normal for Bar Chart
         self.graph_widget.setAxisItems({'bottom': pg.AxisItem(orientation='bottom')})
 
         if not data: return
-            
+
         weeks = [int(w) for w in data.keys()]
         tonnages = list(data.values())
-        
+
         # PyQtGraph BarGraphItem
         bg = pg.BarGraphItem(x=weeks, height=tonnages, width=0.6, brush='#4CAF50')
+        axis = self.graph_widget.getAxis('bottom')
+        ticks = [list(zip(weeks, [str(w) for w in weeks]))]
+        axis.setTicks(ticks)
         self.graph_widget.addItem(bg)
-        
+
         self.graph_widget.setTitle("Total Weekly Volume (Tonnage)", color="white", size="14pt")
         self.graph_widget.setLabel('left', "Total Lbs Lifted", color="white")
         self.graph_widget.setLabel('bottom', "Week Number of the Year", color="white")
